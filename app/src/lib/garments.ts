@@ -3,32 +3,50 @@ import type { GarmentType } from "@/types";
 /** 服装中文名映射 */
 export const GARMENT_LABELS: Record<GarmentType, string> = {
   tshirt: "T恤",
+  polo: "POLO衫",
   shirt: "衬衫",
   hoodie: "卫衣",
   sweater: "毛衣",
+  cardigan: "开衫",
+  vest: "马甲",
   jacket: "夹克",
+  blazer: "西装",
   coat: "大衣",
+  down: "羽绒服",
+  windbreaker: "风衣",
   dress: "连衣裙",
   skirt: "半身裙",
   pants: "裤子",
+  jeans: "牛仔裤",
   shorts: "短裤",
   tanktop: "背心",
+  suit: "套装",
+  jumpsuit: "连体裤",
   other: "服装",
 };
 
 /** 区域映射 */
 export const REGION_MAP: Record<GarmentType, "upper" | "lower" | "full"> = {
   tshirt: "upper",
+  polo: "upper",
   shirt: "upper",
   hoodie: "upper",
   sweater: "upper",
+  cardigan: "upper",
+  vest: "upper",
   jacket: "upper",
+  blazer: "upper",
   coat: "full",
+  down: "upper",
+  windbreaker: "full",
   dress: "full",
   skirt: "lower",
   pants: "lower",
+  jeans: "lower",
   shorts: "lower",
   tanktop: "upper",
+  suit: "full",
+  jumpsuit: "full",
   other: "upper",
 };
 
@@ -71,6 +89,7 @@ function garmentShape(type: GarmentType): string {
         <path d="M70,64 C78,58 88,62 100,62 C112,62 122,58 130,64 L140,210 L60,210 Z" />
         <path d="M82,60 Q100,74 118,60" fill="none" stroke-width="3" />`;
     case "shirt":
+    case "polo":
       return `
         <polygon points="60,66 20,98 42,126 64,102" />
         <polygon points="140,66 180,98 158,126 136,102" />
@@ -89,6 +108,7 @@ function garmentShape(type: GarmentType): string {
         <path d="M88,72 L112,72 L112,96 L88,96 Z" fill="none" stroke-width="2.5" />
         <path d="M58,120 L142,120" fill="none" stroke-width="3" />`;
     case "sweater":
+    case "cardigan":
       return `
         <polygon points="60,66 16,98 40,132 64,104" />
         <polygon points="140,66 184,98 160,132 136,104" />
@@ -97,6 +117,7 @@ function garmentShape(type: GarmentType): string {
         <path d="M60,120 L140,120" fill="none" stroke-width="2.5" />
         <path d="M64,150 L136,150" fill="none" stroke-width="2.5" />`;
     case "jacket":
+    case "blazer":
       return `
         <polygon points="58,66 16,100 40,128 62,102" />
         <polygon points="142,66 184,100 160,128 138,102" />
@@ -109,6 +130,8 @@ function garmentShape(type: GarmentType): string {
         <rect x="92" y="150" width="6" height="6" />
         <rect x="102" y="150" width="6" height="6" />`;
     case "coat":
+    case "down":
+    case "windbreaker":
       return `
         <polygon points="56,64 10,102 36,134 60,104" />
         <polygon points="144,64 190,102 164,134 140,104" />
@@ -135,6 +158,7 @@ function garmentShape(type: GarmentType): string {
         <path d="M66,90 L134,90 L136,104 L64,104 Z" fill="none" stroke-width="3" />
         <path d="M60,140 L140,140" fill="none" stroke-width="2" />`;
     case "pants":
+    case "jeans":
       return `
         <path d="M64,60 L136,60 L138,80 L120,80 L116,236 L100,236 L100,104 L100,236 L84,236 L80,80 L62,80 Z" />
         <path d="M64,60 L136,60 L140,104 L60,104 Z" />
@@ -144,6 +168,28 @@ function garmentShape(type: GarmentType): string {
         <path d="M64,70 L136,70 L138,90 L120,90 L116,160 L100,160 L100,114 L100,160 L84,160 L80,90 L62,90 Z" />
         <path d="M64,70 L136,70 L140,114 L60,114 Z" />
         <path d="M100,114 L100,160" fill="none" stroke-width="2.5" />`;
+    case "vest":
+      return `
+        <path d="M70,58 L130,58 L138,210 L62,210 Z" />
+        <path d="M84,56 L100,80 L116,56" fill="none" stroke-width="3.5" />
+        <path d="M100,80 L100,210" fill="none" stroke-width="2" />
+        <path d="M62,150 L138,150" fill="none" stroke-width="2" />`;
+    case "jumpsuit":
+      return `
+        <polygon points="64,60 38,86 54,110 68,90" />
+        <polygon points="136,60 162,86 146,110 132,90" />
+        <path d="M64,60 L136,60 L132,138 L120,238 L104,238 L100,150 L96,238 L80,238 L68,138 Z" />
+        <path d="M82,56 Q100,74 118,56" fill="none" stroke-width="3.5" />
+        <path d="M60,120 L140,120" fill="none" stroke-width="2.5" />`;
+    case "suit":
+      return `
+        <polygon points="60,54 34,78 50,102 64,82" />
+        <polygon points="140,54 166,78 150,102 136,82" />
+        <path d="M60,54 L140,54 L146,132 L54,132 Z" />
+        <path d="M100,52 L100,132" fill="none" stroke-width="2.5" />
+        <path d="M80,52 L100,70 L120,52" fill="none" stroke-width="3.5" />
+        <path d="M64,144 L136,144 L132,240 L108,240 L100,164 L92,240 L68,240 Z" />
+        <path d="M100,164 L100,240" fill="none" stroke-width="2" />`;
     case "other":
     default:
       return `

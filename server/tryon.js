@@ -140,7 +140,7 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
       "5. 不要在图中出现第二张图的原始内容（不要出现商品图中的模特、背景、文字水印等）。",
       fitText,
       "",
-      "输出一张高分辨率、照片级真实的虚拟试衣效果图。构图与拍摄视角应与第一张图保持一致。",
+      "输出一张高分辨率、照片级真实的虚拟试衣效果图。构图、拍摄视角与画面比例必须与第一张图（用户原图）完全保持一致，不得改变人物身形比例或画面宽高比。",
     ].join("\n");
   }
 
@@ -154,8 +154,80 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
     "服装应自然贴合身形，符合人体结构与光影，呈现真实布料质感与合理褶皱。",
     fitText,
     "",
-    "输出一张高分辨率、照片级真实感的试衣效果图，整体风格与输入照片保持一致。",
+    "输出一张高分辨率、照片级真实感的试衣效果图，整体风格、构图与画面比例与输入照片完全保持一致，不得改变人物身形比例。",
   ].join("\n");
+}
+
+/**
+ * 从 dataURL 中提取图片原始宽高。
+ * @param {string} dataUrl 图片 dataURL（data:image/...;base64,...）
+ * @returns {{width:number, height:number}|null}
+ */
+function getImageDimensions(dataUrl) {
+  try {
+    // dataURL 格式：data:<mime>;base64,<base64数据>
+    const base64 = dataUrl.split(",")[1];
+    if (!base64) return null;
+    const buf = Buffer.from(base64, "base64");
+    // PNG: 宽高在第 16-23 字节（大端 32 位整数）
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x47 && buf[3] === 0x4e) {
+      return {
+        width: buf.readUInt32BE(16),
+        height: buf.readUInt32BE(20),
+      };
+    }
+    // JPEG: 从 SOF 标记读取（FF C0 / FF C2）
+    // SOF 段结构：FF + marker(1B) + 长度(2B) + 精度(1B) + 高度(2B) + 宽度(2B)
+    if (buf[0] === 0xff && buf[1] === 0xd8) {
+      let offset = 2;
+      while (offset < buf.length) {
+        if (buf[offset] !== 0xff) break;
+        const marker = buf[offset + 1];
+        // RST 标记跳过
+        if (marker >= 0xd0 && marker <= 0xd7) { offset += 2; continue; }
+        // SOF0 (C0) / SOF2 (C2) 包含宽高
+        if (marker === 0xc0 || marker === 0xc2) {
+          return {
+            width: buf.readUInt16BE(offset + 7),  // 宽度在 offset+7
+            height: buf.readUInt16BE(offset + 5), // 高度在 offset+5
+          };
+        }
+        // 其他标记：读段长并跳过
+        const segLen = buf.readUInt16BE(offset + 2);
+        offset += 2 + segLen;
+      }
+    }
+    // WebP / GIF / 其他格式：返回 null，走默认方形
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 根据输入图片的实际宽高比，选择最匹配的模型输出尺寸。
+ * Agnes 支持三种尺寸：
+ *   768x1024  （竖版 3:4，适合全身照、竖拍）
+ *   1024x1024 （正方形 1:1，适合近景/半身照）
+ *   1024x768  （横版 4:3，适合横拍）
+ *
+ * @param {string} selfieDataUrl 用户自拍照的 dataURL
+ * @returns {string} 尺寸字符串如 "768x1024"
+ */
+function pickBestSize(selfieDataUrl) {
+  // 优先使用环境变量手动覆盖
+  if (process.env.IMAGE_SIZE) return process.env.IMAGE_SIZE;
+
+  const dim = getImageDimensions(selfieDataUrl);
+  if (!dim || !dim.width || !dim.height) return "1024x1024";
+
+  const ratio = dim.width / dim.height;
+  // 竖图（高 > 宽）：用 768x1024
+  if (ratio < 0.85) return "768x1024";
+  // 横图（宽 > 高很多）：用 1024x768
+  if (ratio > 1.15) return "1024x768";
+  // 接近正方形：用 1024x1024
+  return "1024x1024";
 }
 
 /** 调用图像生成接口（默认 Agnes：JSON 体 + extra_body.image 图生图） */
@@ -164,7 +236,8 @@ async function callImageApi({ selfie, productImage, prompt }) {
   const endpoint = process.env.IMAGE_ENDPOINT || "/images/generations";
   const url = `${base}${endpoint}`;
   const model = process.env.IMAGE_MODEL || "agnes-image-2.0-flash";
-  const size = process.env.IMAGE_SIZE || "1024x1024";
+  const size = pickBestSize(selfie);  // ← 根据自拍实际比例自动选择
+  console.log(`[tryon] 原图尺寸检测: 输出size=${size}`);
   const useInputImage = (process.env.IMAGE_INPUT_IMAGE ?? "true").toLowerCase() !== "false";
 
   const headers = {
