@@ -101,13 +101,21 @@ export async function resolveToDataUrl(src, { retries = 2, timeoutMs = 10000 } =
   return null;
 }
 
-/** 根据服装信息与身体数据，构造给图像模型的 prompt */
+/**
+ * 根据服装信息与身体数据，构造给图像模型的 prompt。
+ *
+ * 核心设计原则（经多次迭代验证）：
+ *   ① 角色必须是「编辑器」而非「创作者」——告诉模型这是 EDIT 不是 GENERATE
+ *   ② 必须用最简短的语言突出「唯一操作=换衣服」
+ *   ③ 人物外貌描述越具体越好（避免模型用商品图模特替换）
+ *   ④ 两张图模式时，第二张图的权重需要被压低
+ */
 function buildPrompt(garment = {}, m = {}, opts = {}) {
   const color = COLOR_CN[garment.color] || garment.color || "未指定颜色";
   const type = TYPE_CN[garment.type] || garment.type || "服装";
   const region = REGION_CN[garment.region] || "全身";
 
-  // ── 身体数据描述（两种模式共用）──
+  // 身体数据（两种模式共用）
   const fit = [];
   if (m.gender) fit.push(m.gender === "male" ? "男性" : m.gender === "female" ? "女性" : m.gender);
   if (m.height) fit.push(`身高约 ${m.height}cm`);
@@ -116,73 +124,36 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   if (m.waist) fit.push(`腰围约 ${m.waist}cm`);
   if (m.hips) fit.push(`臀围约 ${m.hips}cm`);
   if (m.shoulder) fit.push(`肩宽约 ${m.shoulder}cm`);
-  const fitText = fit.length ? `\n人物体型数据：${fit.join("，")}。请根据这些数据调整服装的合身度与褶皱分布，使版型贴合真实身材。` : "";
+  const fitText = fit.length ? `（人物体型：${fit.join("，")}，据此调整服装合身度）` : "";
 
-  // ── 模式 A：有商品主图 → 以用户自拍为底的真试衣 ──
-  // 图序：[自拍(底图), 商品图(服装参考)]
-  // 提示词风格：仿 OpenAI 图像生成方法论——分层描述式（Subject/Environment/
-  // Lighting/Style/Composition），用正向语言描述「画面里有什么」，而非禁令式。
+  // 外貌锁定文本（由 runTryOn 在调用前通过视觉模型自动生成）
+  const faceLock = opts.faceDescription || "";
+
+  // ── 模式 A：有商品主图 → 图像编辑操作（EDIT，不是 GENERATE）──
   if (opts.productImage) {
     return [
-      "你是一名专业时尚摄影师，正在为图1中的人物拍摄一组虚拟试穿照片。",
+      `IMAGE EDIT OPERATION — 只执行一个操作：把图中人物的当前衣服换成一件${color}${type}（覆盖${region}）。`,
       "",
-      "【画面主体 · 图1人物】",
-      "这张照片的主体是图1中的真实人物。画面中该人物呈现以下可辨识的视觉特征，请精确复现、原样保留：",
-      "- 面部：特定的五官比例、脸型轮廓、肤色与表情——保留图1样貌，不做美化或瘦脸",
-      "- 发型：图1中的发色、长度、层次与刘海样式原样保留",
-      "- 体型：图1中的身高比例、肩宽与身形轮廓原样保留",
-      "- 姿态：图1中人物特定的身体朝向、重心与头部角度原样保留",
-      "- 手部：图1中双臂与双手所处的位置与姿态原样保留（例如自然垂落于身体两侧）",
-      "- 背景：图1中的环境场景、光线方向与阴影原样保留",
+      `绝对不可改变的内容（违反即失败）：`,
+      `- 人物的脸、发型、体型、姿势、手势、表情 — 100% 保持原图，像素级不变`,
+      `- 背景环境、光线方向、构图 — 完全不变`,
+      faceLock ? `- 人物外貌特征：${faceLock}` : "",
       "",
-      "【待试穿服装 · 图2】",
-      "图2是一件服装单品。请从中提取视觉属性，用于图1人物身上的服装：",
-      `- 款式：${type} 的具体版型与剪裁`,
-      `- 颜色：${color}，含图案与纹理细节`,
-      "- 面料：依图2判断材质质感（棉/丝/麻/牛仔/针织等）",
-      "- 细节：领型、袖型、腰线、下摆、门襟等设计元素",
+      `服装要求：款式=${type}，颜色=${color}${fitText}。衣服必须贴合此人的真实身材，呈现自然的褶皱和垂坠。边缘与皮肤无缝融合。`,
       "",
-      "【拍摄说明】",
-      `以图1为取景基准，将图2的${color}${type}穿在图1人物身上。服装随人物身材自然起伏，呈现真实褶皱、垂坠与布料光影；领口、袖口、下摆与皮肤自然衔接，无拼接痕迹、无白边、无半透明伪影。`,
-      "",
-      "【画面规格】",
-      "- 风格：照片级真实，类似专业人像摄影棚出品，皮肤纹理与布料质感清晰",
-      "- 构图：与图1完全一致——相同视角、相同景别、人物在画面中的占比与位置不变",
-      "- 比例：画面宽高比等于图1原图",
-      "- 光照：服装受光方向与图1光线一致，阴影自然",
-      "- 范围：画面中唯一的变化是服装本身，人物外貌与背景一切保持图1原貌",
-      fitText,
-      "",
-      "输出这张照片级真实的虚拟试穿效果图，观感如同「此人真实试穿该服装后拍摄的照片」。",
-    ].join("\n");
+      `注意：如果第二张输入图包含模特，请完全忽略模特的外貌，仅从该图提取服装的款式、颜色和面料信息。`,
+    ].filter(Boolean).join("\n");
   }
 
-  // ── 模式 B：无商品主图 → 在自拍照上按文字描述添加服装 ──
-  // 同样采用分层描述式结构，用正向语言锁定人物、描述新增服装
+  // ── 模式 B：无商品主图 → 纯文字描述换衣（单图编辑）──
   return [
-    "你是一名专业时尚摄影师，正在为图1中的人物拍摄虚拟试穿照片。",
+    `IMAGE EDIT OPERATION — 只执行一个操作：把图中人物的当前衣服换成一件${color}${type}（覆盖${region}）。`,
     "",
-    "【画面主体 · 图1人物】",
-    "画面主体是图1中的真实人物。请精确复现并原样保留以下视觉特征：",
-    "- 面部：五官比例、脸型、肤色与表情保持图1样貌",
-    "- 发型：发色、长度、层次与图1一致",
-    "- 体型：身高比例、肩宽与身形轮廓与图1一致",
-    "- 姿态：身体朝向、重心、头部角度与图1一致",
-    "- 手部：双臂与双手的位置、姿态与图1一致",
-    "- 背景：环境场景、光线方向与图1一致",
+    `绝对不可改变的内容：人物的脸、发型、体型、姿势、手势、表情、背景 — 100%保持原图不变。`,
+    faceLock ? `\n人物外貌特征：${faceLock}` : "",
     "",
-    "【拍摄说明】",
-    `让图1人物穿上：一件${color}的${type}（覆盖${region}）。服装随人物身材自然贴合，呈现真实褶皱、垂坠与布料光影，与皮肤自然衔接。`,
-    fitText,
-    "",
-    "【画面规格】",
-    "- 风格：照片级真实，类似专业人像摄影",
-    "- 构图：与图1完全一致（视角、景别、人物占比与位置不变）",
-    "- 比例：画面宽高比等于图1原图",
-    "- 范围：画面中唯一的变化是服装本身，人物外貌与背景一切保持图1原貌",
-    "",
-    "输出这张照片级真实的虚拟试穿效果图，观感如同「此人真实穿上该服装后拍摄的照片」。",
-  ].join("\n");
+    `服装要求：款式=${type}，颜色=${color}${fitText}。贴合此人真实身材，自然褶皱，边缘无缝融合。`,
+  ].filter(Boolean).join("\n");
 }
 
 /**
@@ -232,29 +203,35 @@ function getImageDimensions(dataUrl) {
 }
 
 /**
- * 根据输入图片的实际宽高比，选择最匹配的模型输出尺寸。
- * Agnes 支持三种尺寸：
- *   768x1024  （竖版 3:4，适合全身照、竖拍）
- *   1024x1024 （正方形 1:1，适合近景/半身照）
- *   1024x768  （横版 4:3，适合横拍）
+ * 根据输入图片的实际宽高，输出与自拍一致的尺寸字符串。
+ *
+ * 经实测：Agnes 接受任意 "WxH" 尺寸（并非只有 3 种），且会严格保持
+ * 请求的宽高比（仅把像素总量归一到自身分辨率区间，不会压扁人物）。
+ * 因此直接按自拍真实尺寸生成即可，无需硬凑 768x1024 / 1024x1024 / 1024x768。
+ *
+ * 为兼容超大原图（如手机直出 4032x3024），长边超过 MAX_EDGE 时按
+ * 比例缩放到 MAX_EDGE，避免单次生成过大导致超时/失败。
  *
  * @param {string} selfieDataUrl 用户自拍照的 dataURL
- * @returns {string} 尺寸字符串如 "768x1024"
+ * @returns {string} 尺寸字符串如 "1280x1707"
  */
+const MAX_EDGE = 2048;
 function pickBestSize(selfieDataUrl) {
-  // 优先使用环境变量手动覆盖
+  // 手动覆盖（可选）：在 .env 设 IMAGE_SIZE 可强制指定输出尺寸
   if (process.env.IMAGE_SIZE) return process.env.IMAGE_SIZE;
 
   const dim = getImageDimensions(selfieDataUrl);
+  // 解析失败则回退到通用方形
   if (!dim || !dim.width || !dim.height) return "1024x1024";
 
-  const ratio = dim.width / dim.height;
-  // 竖图（高 > 宽）：用 768x1024
-  if (ratio < 0.85) return "768x1024";
-  // 横图（宽 > 高很多）：用 1024x768
-  if (ratio > 1.15) return "1024x768";
-  // 接近正方形：用 1024x1024
-  return "1024x1024";
+  let { width, height } = dim;
+  const longest = Math.max(width, height);
+  if (longest > MAX_EDGE) {
+    const k = MAX_EDGE / longest;
+    width = Math.round(width * k);
+    height = Math.round(height * k);
+  }
+  return `${width}x${height}`;
 }
 
 /** 调用图像生成接口（默认 Agnes：JSON 体 + extra_body.image 图生图） */
@@ -320,6 +297,61 @@ async function callImageApi({ selfie, productImage, prompt }) {
 }
 
 /**
+ * 用视觉模型提取自拍照中人物的可见外貌特征。
+ * 返回一段具体描述（如"短发、圆脸、中等身材、穿绿色套装、双手自然下垂"），
+ * 嵌入试衣 prompt 后可大幅降低模型「用商品图模特替换用户」的概率。
+ *
+ * @param {string} selfieDataUrl 自拍的 dataURL
+ * @returns {Promise<string>} 外貌描述文本，失败返回空字符串
+ */
+async function extractFaceDescription(selfieDataUrl) {
+  try {
+    const visionBase = (process.env.VISION_BASE_URL || process.env.IMAGE_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, "");
+    const visionKey = process.env.VISION_API_KEY || process.env.IMAGE_API_KEY;
+    const visionModel = process.env.VISION_MODEL || "agnes-2.0-flash";
+
+    if (!visionKey) return ""; // 未配置视觉模型，跳过
+
+    const res = await fetch(`${visionBase}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${visionKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "请仔细观察这张照片中的人物，用一句话描述其可见的外貌特征。只需描述客观可观察到的：发型（长短/颜色/直卷）、脸型（圆/方/椭圆）、体型（偏瘦/标准/偏胖）、当前穿着的大致款式和颜色、姿势（站姿/手的位置）。不要评价美丑。输出格式：纯中文，不超过60字。" },
+              { type: "image_url", image_url: { url: selfieDataUrl } },
+            ],
+          },
+        ],
+        max_tokens: 200,
+      }),
+    });
+
+    if (!res.ok) return "";
+
+    const json = await res.json();
+    // agnes-2.0-flash 推理模型可能把内容放在 reasoning_content
+    const content =
+      json.choices?.[0]?.message?.content ||
+      json.choices?.[0]?.message?.reasoning_content ||
+      "";
+    // 提取纯文本（去掉 JSON 包装）
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 120);
+    return cleaned || "";
+  } catch (e) {
+    console.log("[tryon] 人物外貌提取跳过:", e.message);
+    return ""; // 失败不阻塞主流程
+  }
+}
+
+/**
  * 运行 AI 试衣
  * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string}} params
  *   productImage 为商品主图（URL 或 dataURL）。提供时走「真试衣」：以自拍为底，把商品服装穿到用户身上。
@@ -338,7 +370,13 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
   }
   // 商品主图：跨域 URL 在服务端转 base64；转换失败则回退模式 B
   const productB64 = productImage ? await resolveToDataUrl(productImage) : null;
-  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64 });
+
+  // ★ 关键步骤：用视觉模型提取自拍中人物的可见外貌特征
+  // 这段描述嵌入 prompt 后，可大幅降低模型「用商品图模特替换用户」的概率
+  const faceDescription = await extractFaceDescription(selfie);
+  if (faceDescription) console.log(`[tryon] 人物外貌特征: ${faceDescription}`);
+
+  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, faceDescription });
   const image = await callImageApi({ selfie, productImage: productB64, prompt });
   return { image };
 }
