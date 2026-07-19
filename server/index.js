@@ -5,7 +5,7 @@ dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), ".env") });
 import express from "express";
 import cors from "cors";
 import { parseProductPage } from "./parse.js";
-import { runTryOn } from "./tryon.js";
+import { runTryOn, resolveToDataUrl } from "./tryon.js";
 import { visionConfigured, visionModel } from "./vision.js";
 
 const app = express();
@@ -32,6 +32,13 @@ app.get("/api/parse", async (req, res) => {
   if (!url) return res.status(400).json({ ok: false, error: "缺少 url 参数" });
   try {
     const product = await parseProductPage(url);
+    // 预取商品主图并转为 dataURL 一并返回：
+    // 避免「生成试衣」时才临时拉取外链图，首次拉取失败会回退到通用衣服（mock），
+    // 只有再试一次才用真实商品图。解析阶段用户正在填自拍/身体数据，有充足时间。
+    if (product?.imageUrl && /^https?:/i.test(product.imageUrl)) {
+      const dataUrl = await resolveToDataUrl(product.imageUrl);
+      if (dataUrl) product.imageUrl = dataUrl;
+    }
     res.json({ ok: true, product, mock: false });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message || "解析失败" });

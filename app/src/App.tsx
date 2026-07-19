@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Sparkles,
   Link2,
@@ -37,6 +37,40 @@ const EMPTY_MEASURE: BM = {
   shoulder: "",
 };
 
+const MEASURE_KEY = "tryon:measurements";
+
+/** 从 localStorage 读取已保存的身体数据（解析失败/无数据则回退空值） */
+function loadMeasurements(): BM {
+  try {
+    const raw = localStorage.getItem(MEASURE_KEY);
+    if (!raw) return EMPTY_MEASURE;
+    const parsed = JSON.parse(raw) as Partial<BM>;
+    const gender = parsed.gender === "female" || parsed.gender === "male" ? parsed.gender : "";
+    const num = (v: unknown): number | "" =>
+      typeof v === "number" && !Number.isNaN(v) ? v : "";
+    return {
+      gender,
+      height: num(parsed.height),
+      weight: num(parsed.weight),
+      bust: num(parsed.bust),
+      waist: num(parsed.waist),
+      hips: num(parsed.hips),
+      shoulder: num(parsed.shoulder),
+    };
+  } catch {
+    return EMPTY_MEASURE;
+  }
+}
+
+/** 把身体数据写入 localStorage（刷新/重开页面后可恢复） */
+function saveMeasurements(m: BM) {
+  try {
+    localStorage.setItem(MEASURE_KEY, JSON.stringify(m));
+  } catch {
+    /* 隐私模式/容量满时静默忽略，不影响主流程 */
+  }
+}
+
 const FEATURES = [
   { icon: Link2, title: "一键粘贴链接", desc: "复制各大平台的商品链接，自动识别是否为服装" },
   { icon: Camera, title: "上传自拍", desc: "上传或拍摄一张照片，即可在线试穿" },
@@ -48,7 +82,12 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selfieUrl, setSelfieUrl] = useState<string | null>(null);
   const [selfieImg, setSelfieImg] = useState<HTMLImageElement | null>(null);
-  const [measurements, setMeasurements] = useState<BM>(EMPTY_MEASURE);
+  const [measurements, setMeasurements] = useState<BM>(loadMeasurements);
+
+  // 身体数据持久化：任意改动即写入 localStorage，刷新页面不丢失
+  useEffect(() => {
+    saveMeasurements(measurements);
+  }, [measurements]);
   const [result, setResult] = useState<TR | null>(null);
   const [generating, setGenerating] = useState(false);
 

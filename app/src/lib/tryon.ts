@@ -152,24 +152,39 @@ function imgToDataUrl(img: HTMLImageElement | HTMLCanvasElement): string {
 export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
   const { selfie, garment, measurements, productImageUrl } = opts;
   const { quality, missing } = scoreQuality(measurements);
-  try {
-    const selfieUrl = imgToDataUrl(selfie);
-    const { image } = await tryOnViaApi({
-      selfie: selfieUrl,
-      garment: { type: garment.type, color: garment.color, region: garment.region },
-      measurements: measurements as unknown as Record<string, string>,
-      productImage: productImageUrl || undefined,
-    });
-    return {
-      imageUrl: image,
-      createdAt: Date.now(),
-      quality,
-      garment,
-      note: missing.length
-        ? `AI 试衣完成。补充「${missing.join("、")}」可进一步优化版型贴合度。`
-        : "AI 试衣完成，版型贴合度较高。",
-    };
-  } catch {
-    return tryOn(opts);
+  const selfieUrl = imgToDataUrl(selfie);
+  const payload = {
+    selfie: selfieUrl,
+    garment: { type: garment.type, color: garment.color, region: garment.region },
+    measurements: measurements as unknown as Record<string, string>,
+    productImage: productImageUrl || undefined,
+  };
+
+  // 首次调用失败时自动重试一次真实接口（应对后端冷启动 / 首次网络抖动 /
+  // 商品图首拉失败），两次都失败才回退本地 Canvas 预览，
+  // 避免「上传后第一次点击总是拿到 mock 衣服，再点一次才真实」。
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const { image } = await tryOnViaApi(payload);
+      return {
+        imageUrl: image,
+        createdAt: Date.now(),
+        quality,
+        garment,
+        note: missing.length
+          ? `AI 试衣完成。补充「${missing.join("、")}」可进一步优化版型贴合度。`
+          : "AI 试衣完成，版型贴合度较高。",
+      };
+    } catch (e) {
+      // 后端明确未配置模型/密钥：无需重试，直接回退本地预览
+      const code = (e as Error & { code?: string })?.code;
+      if (code === "NO_TOKEN" || code === "NO_MODEL") break;
+      // 非最后一次尝试：短暂退避后重试真实接口
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
   }
+  return tryOn(opts);
 }

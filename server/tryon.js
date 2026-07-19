@@ -53,20 +53,52 @@ async function normalizeImage(item) {
 /** 把商品主图（可能是跨域 URL）在服务端拉取并转成 dataURL，供模型作为输入 */
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-async function resolveToDataUrl(src) {
+
+/**
+ * 拉取图片外链并转 dataURL。
+ * 关键：带超时 + 自动重试 + 合理 Referer（防盗链），
+ * 避免「首次拉取失败 → 回退通用衣服（mock），再试一次才用真实商品图」的问题。
+ * @param {string} src 图片 URL（或已是 dataURL 时直接复用）
+ * @param {{retries?:number, timeoutMs?:number}} [opts]
+ */
+export async function resolveToDataUrl(src, { retries = 2, timeoutMs = 10000 } = {}) {
+  if (!src) return null;
+  if (src.startsWith("data:")) return src; // 已是 dataURL，直接复用
+
+  // 用图片所在站点根域作为 Referer（alicdn 等 CDN 接受同域 referer，避免防盗链 403）
+  let referer = "";
   try {
-    if (!src) return null;
-    if (src.startsWith("data:")) return src; // 已是 dataURL，直接复用
-    const r = await fetch(src, {
-      headers: { "User-Agent": UA, Referer: src, Accept: "image/*,*/*" },
-    });
-    if (!r.ok) return null;
-    const ab = await r.arrayBuffer();
-    const ct = (r.headers.get("content-type") || "image/jpeg").split(";")[0];
-    return `data:${ct};base64,${Buffer.from(ab).toString("base64")}`;
+    const u = new URL(src);
+    referer = `${u.protocol}//${u.host}/`;
   } catch {
-    return null; // 拉取失败则放弃商品图，回退到「按描述添加服装」模式
+    /* 非法 URL 时不带 referer */
   }
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(src, {
+        headers: {
+          "User-Agent": UA,
+          ...(referer ? { Referer: referer } : {}),
+          Accept: "image/*,*/*",
+        },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const ab = await r.arrayBuffer();
+      if (!ab || ab.byteLength === 0) throw new Error("空响应");
+      const ct = (r.headers.get("content-type") || "image/jpeg").split(";")[0];
+      return `data:${ct};base64,${Buffer.from(ab).toString("base64")}`;
+    } catch {
+      clearTimeout(timer);
+      if (attempt === retries) return null; // 重试用尽，放弃商品图，回退「按描述添加服装」模式
+      await new Promise((res) => setTimeout(res, 300 * (attempt + 1))); // 退避后重试
+    }
+  }
+  return null;
 }
 
 /** 根据服装信息与身体数据，构造给图像模型的 prompt */
@@ -75,20 +107,7 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   const type = TYPE_CN[garment.type] || garment.type || "服装";
   const region = REGION_CN[garment.region] || "全身";
 
-  // ── 模式 A：有商品主图 → 换脸式试衣 ──
-  // 保留商品图里模特的姿势/服装/背景，仅把用户自拍的脸合成上去
-  if (opts.productImage) {
-    return [
-      "以下是两张图片。",
-      "第一张是商品展示图：图中模特正穿着待试穿的服装。请务必完整保留第一张图的构图、人物姿势、服装款式、背景、灯光与整体质感，不要做任何改动。",
-      "第二张是用户本人照片：请提取该用户真实的脸部特征、五官、发型与肤色。",
-      "请仅将用户本人的脸自然、无缝地替换到第一张图人物的脸上，使两张面容融为一体，光影自然、皮肤质感真实，不出现重影或拼接痕迹；",
-      "保持第一张图原本的姿势、服装、背景与灯光完全不变。",
-      "输出一张高分辨率、照片级真实感的图片。",
-    ].join("\n");
-  }
-
-  // ── 模式 B：无商品主图 → 在自拍照上按描述添加服装 ──
+  // ── 身体数据描述（两种模式共用）──
   const fit = [];
   if (m.gender) fit.push(m.gender === "male" ? "男性" : m.gender === "female" ? "女性" : m.gender);
   if (m.height) fit.push(`身高约 ${m.height}cm`);
@@ -97,8 +116,35 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   if (m.waist) fit.push(`腰围约 ${m.waist}cm`);
   if (m.hips) fit.push(`臀围约 ${m.hips}cm`);
   if (m.shoulder) fit.push(`肩宽约 ${m.shoulder}cm`);
-  const fitText = fit.length ? `体型参考：${fit.join("，")}。` : "";
+  const fitText = fit.length ? `\n人物体型数据：${fit.join("，")}。请根据这些数据调整服装的合身度与褶皱分布，使版型贴合真实身材。` : "";
 
+  // ── 模式 A：有商品主图 → 以用户自拍为底的真试衣 ──
+  // 图序：[自拍(底图), 商品图(服装参考)]
+  // 核心意图：完整保留用户的脸/身体/姿势/背景，把商品里的衣服穿到用户身上
+  if (opts.productImage) {
+    return [
+      "你是一名专业的虚拟试衣 AI 生成模型。以下是两张输入图片：",
+      "",
+      "【第一张图片：用户本人】这是需要保留的主体人物。你必须完整保留这张图中人物的脸部五官、发型、体型特征、身体姿态、拍摄角度和原有背景环境。",
+      "",
+      "【第二张图片：商品服装参考图】这张图展示了一件待试穿的服装（包括款式、颜色、图案、面料质感）。你只需要从这张图中提取服装的视觉信息即可，忽略图中的人物模特、背景和其他无关元素。",
+      "",
+      "【生成任务】",
+      `请以第一张图（用户本人）为唯一基础和底图，将第二张图中的${color}${type}（覆盖${region}）逼真地穿在第一张图人物的身上。`,
+      "",
+      "严格要求：",
+      "1. 输出图中的人物必须是第一张图中的同一个人——脸部、发型、体型、姿势、背景全部保持不变，不能替换成任何其他人。",
+      "2. 服装必须来自第二张图的款式，但要自然适配第一张图人物的身材——根据人体结构调整衣服的松紧、褶皱和垂坠感。",
+      "3. 服装与身体交界处（领口、袖口、下摆）必须自然融合，无生硬边缘、无拼接痕迹、无透明/半透明伪影。",
+      "4. 保持照片级真实感：皮肤纹理真实、光影一致（服装阴影需匹配原图光线方向）、布料质感清晰可见。",
+      "5. 不要在图中出现第二张图的原始内容（不要出现商品图中的模特、背景、文字水印等）。",
+      fitText,
+      "",
+      "输出一张高分辨率、照片级真实的虚拟试衣效果图。构图与拍摄视角应与第一张图保持一致。",
+    ].join("\n");
+  }
+
+  // ── 模式 B：无商品主图 → 在自拍照上按文字描述添加服装 ──
   return [
     "你是一名专业的虚拟试衣 AI。下面是用户本人的真实照片。",
     "请严格保留照片中人物的脸部特征、身份、发型、体型、姿势与原有背景，",
@@ -127,11 +173,11 @@ async function callImageApi({ selfie, productImage, prompt }) {
   };
 
   // Agnes / OpenAI 兼容网关风格：图生图走 extra_body.image（数组，支持多张）
-  // 顺序：[商品主图（保留姿势/服装）, 用户自拍（提供脸）]
+  // 真试衣模式图序：[自拍照(底图/主体), 商品图(服装参考)]
+  // 第一张图是用户本人（需完整保留脸/身体/姿势/背景），第二张仅提取服装款式
   // （若你的服务使用 multipart 的 /images/edits，可在此改为 FormData 并 append("image", ...)）
-  const images = [];
+  const images = [selfie];
   if (productImage) images.push(productImage);
-  images.push(selfie);
 
   const body = {
     model,
@@ -160,7 +206,7 @@ async function callImageApi({ selfie, productImage, prompt }) {
 /**
  * 运行 AI 试衣
  * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string}} params
- *   productImage 为商品主图（URL 或 dataURL）。提供时走「换脸式」：保留商品图姿势/服装，仅合成用户脸。
+ *   productImage 为商品主图（URL 或 dataURL）。提供时走「真试衣」：以自拍为底，把商品服装穿到用户身上。
  * @returns {Promise<{image:string}>}
  */
 export async function runTryOn({ selfie, garment, measurements, productImage }) {
