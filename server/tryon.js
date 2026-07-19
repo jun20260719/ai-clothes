@@ -32,7 +32,6 @@ const TYPE_CN = {
   jacket: "夹克", hoodie: "卫衣", sweater: "毛衣", pants: "裤子",
   jeans: "牛仔裤", skirt: "半身裙", shorts: "短裤", suit: "西装",
 };
-const REGION_CN = { upper: "上身", lower: "下身", full: "全身" };
 
 
 /** 把图像接口返回（b64 或 url）统一规范成可直接 <img> 使用的字符串 */
@@ -140,12 +139,15 @@ async function resolveToDataUrlCached(src) {
  * 迭代经验：
  *   v1 "摄影师生成" → 人物被替换成模特
  *   v2 "EDIT + 身份锁定" → 人物保住了，但服装变纯色（描述太弱）
- *   v3 平衡：身份锁定 + 商品服装详细视觉描述 + EDIT 操作
+ *   v3 双锁（身份+服装细节）→ 服装保真，但商品只有上/下衣时会脑补另一半
+ *   v4 区域约束（upper/lower/full）+ 强化脸部锁定，解决两个问题：
+ *      ① 商品图带模特时合成脸偏向模特
+ *      ② 商品只有上/下衣时脑补不存在的部位
  */
 function buildPrompt(garment = {}, m = {}, opts = {}) {
   const color = COLOR_CN[garment.color] || garment.color || "未指定颜色";
   const type = TYPE_CN[garment.type] || garment.type || "服装";
-  const region = REGION_CN[garment.region] || "全身";
+  const region = garment.region || "full"; // upper / lower / full
 
   // 身体数据（两种模式共用）
   const fit = [];
@@ -156,41 +158,80 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   if (m.waist) fit.push(`腰围约 ${m.waist}cm`);
   if (m.hips) fit.push(`臀围约 ${m.hips}cm`);
   if (m.shoulder) fit.push(`肩宽约 ${m.shoulder}cm`);
-    const fitText = fit.length ? `\n体型参考：${fit.join("，")}，据此调整服装合身度和褶皱分布。` : "";
+  const fitText = fit.length ? `\n体型参考：${fit.join("，")}，据此调整服装合身度和褶皱分布。` : "";
 
   const faceLock = opts.faceDescription || "";
   const garmentDetail = opts.garmentDetail || "";
 
+  // ── 区域约束：明确只替换哪个部位，其它部位保持原图 ──
+  // 解决"商品只有上衣/下衣时脑补不存在的部分"
+  const REGION_GUIDE = {
+    upper: {
+      label: "上身",
+      scope: "只替换上半身服装（从颈部/肩膀到腰臀之间）",
+      keep: "下半身（裤子、裙子、鞋子、袜子）必须与原图完全一致：同样的款式、颜色、长度、褶皱。禁止修改、禁止替换、禁止脑补新的下装。",
+      keepHint: "例如原图穿牛仔裤，结果图必须仍是同一条牛仔裤（同色、同裤型、同位置），不可添加裙摆或改变裤型。",
+    },
+    lower: {
+      label: "下身",
+      scope: "只替换下半身服装（从腰部到脚踝）",
+      keep: "上半身（上衣、外套、领口）必须与原图完全一致：同样的款式、颜色、图案、纽扣。禁止修改、禁止替换、禁止脑补新的上衣。",
+      keepHint: "例如原图穿白色T恤，结果图必须仍是同一件白色T恤（同色、同领型、同图案），不可改变上衣颜色或款式。",
+    },
+    full: {
+      label: "全身",
+      scope: "替换整体服装（上装和下装，或连体款式）",
+      keep: "全身服装都替换为目标服装。但脸部、发型、体型、姿势、背景必须与原图一致。",
+      keepHint: "",
+    },
+  };
+  const guide = REGION_GUIDE[region] || REGION_GUIDE.full;
+
   // ── 模式 A：有商品主图 ──
   if (opts.productImage) {
     return [
-      `【任务】IMAGE EDIT — 只做一件事：把图中人物的当前衣服替换为下方的「目标服装」。`,
+      `【任务】IMAGE EDIT — 把第一张图中人物的${guide.label}服装，替换为第二张图的目标服装。${guide.scope}。`,
       "",
-      `【身份锁定 — 不可违反】`,
-      `- 人物的脸、五官、发型、肤色、表情、体型 — 必须与原图完全一致，像素级保留`,
-      `- 手臂位置、手势、站姿 — 与原图一致`,
-      `- 背景环境、门、光线方向、构图比例 — 完全不变`,
-      faceLock ? `- 人物具体外貌：${faceLock}` : "",
+      `【身份锁定 — 最高优先级，不可违反】`,
+      `- 人物的脸型、五官（眼/鼻/嘴/眉）、表情 — 必须与第一张图像素级一致，禁止任何改动`,
+      `- 发型（长短/直卷/刘海/发色）、发际线 — 与第一张图完全一致`,
+      `- 肤色、肤质、体型、手臂位置、手势、站姿 — 与第一张图完全一致`,
+      `- 背景环境、光线方向、画面构图、人物在画面中的位置和比例 — 完全不变`,
+      faceLock ? `- 人物外貌锚点（必须严格匹配）：${faceLock}` : "",
+      `- ⚠️ 严禁参考第二张图中模特的任何特征。第二张图仅供提取服装款式，其中人物的脸、发型、肤色、身材、姿势全部忽略。最终输出的人物必须是第一张图中的同一个人。`,
       "",
-      `【目标服装 — 必须严格还原以下细节】`,
+      `【区域约束 — 必须遵守】`,
+      `- 本次只替换：${guide.label}服装`,
+      `- 保留不变：${guide.keep}`,
+      guide.keepHint ? `- ${guide.keepHint}` : "",
+      "",
+      `【目标服装 — 严格还原以下视觉细节】`,
       garmentDetail
         ? `${garmentDetail}`
         : `- 类型：${type}\n- 主色调：${color}`,
       fitText,
       "",
       `【质量要求】`,
-      `- 服装贴合此人的真实身材（不是把人改成适合衣服）\n- 自然褶皱、垂坠感、布料光影\n- 边缘与皮肤无缝融合，无白边、无拼接痕迹\n- 照片级真实质感`,
+      `- 服装贴合此人的真实身材（不是把人改成适合衣服）`,
+      `- 自然褶皱、垂坠感、布料光影、缝线细节`,
+      `- 服装边缘与皮肤无缝融合，无白边、无拼接痕迹、无浮空感`,
+      `- 照片级真实质感，光照与原图一致`,
       "",
-      `【重要】第二张输入图是服装参考图。请从中复制服装的全部视觉特征（款式、颜色、图案、面料、细节），但完全忽略图中模特的脸、发型、身材。最终输出的人物必须是第一张图中的同一个人，只是穿了第二张图的这件衣服。`,
+      `【图序说明】第一张图=用户本人（需完整保留脸/身体/姿势/背景${region === "upper" ? "/下装" : region === "lower" ? "/上装" : ""}），第二张图=目标服装参考（只取服装款式，忽略模特）。`,
     ].filter(Boolean).join("\n");
   }
 
   // ── 模式 B：无商品主图 ──
   return [
-    `【任务】IMAGE EDIT — 只做一件事：把图中人物的当前衣服替换为目标服装。`,
+    `【任务】IMAGE EDIT — 把图中人物的${guide.label}服装替换为目标服装。${guide.scope}。`,
     "",
-    `【身份锁定】人物的脸、发型、体型、姿势、背景 — 100%保持原图不变。`,
-    faceLock ? `\n人物外貌：${faceLock}` : "",
+    `【身份锁定】人物的脸、五官、发型、肤色、体型、姿势、背景 — 100%保持原图不变。`,
+    faceLock ? `\n人物外貌锚点：${faceLock}` : "",
+    "",
+    `【区域约束】`,
+    `- 本次只替换：${guide.label}服装`,
+    `- 保留不变：${guide.keep}`,
+    guide.keepHint ? `- ${guide.keepHint}` : "",
     "",
     `【目标服装】类型=${type}，主色=${color}${fitText}`,
     "",
@@ -307,7 +348,7 @@ function pickBestSize(selfieDataUrl) {
 }
 
 /** 调用图像生成接口（默认 Agnes：JSON 体 + extra_body.image 图生图） */
-async function callImageApi({ selfie, productImage, prompt }) {
+async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
   const base = (process.env.IMAGE_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, "");
   const endpoint = process.env.IMAGE_ENDPOINT || "/images/generations";
   const url = `${base}${endpoint}`;
@@ -316,18 +357,28 @@ async function callImageApi({ selfie, productImage, prompt }) {
   console.log(`[tryon] callImageApi: 最终输出 size=${size}`);
   const useInputImage = (process.env.IMAGE_INPUT_IMAGE ?? "true").toLowerCase() !== "false";
 
-  // 负面提示词（保留以兼容支持该参数的模型如 agnes；OpenAI 官方不推荐负面提示，
-  // 因此正向描述已在 prompt 中承担主要约束职责，这里仅作兜底）
-  const negativePrompt = [
-    "改变人物面部或身份",
-    "改变发型或体型",
-    "改变身体姿势或手势",
+  // 负面提示词：按区域动态调整，明确禁止复制模特特征和脑补其它部位
+  // 解决两个核心问题：
+  //   ① 商品图带模特 → 合成脸偏向模特
+  //   ② 商品只有上/下衣 → 脑补不存在的部位
+  const negativeItems = [
+    "改变人物面部或五官",
+    "复制或参考商品图模特的脸、发型、肤色、身材",
+    "改变发型或发色",
+    "改变体型或姿势",
     "改变背景环境",
-    "使用商品模特指代用户",
-    "改变画面构图或比例",
-    "服装类型偏离商品",
-    "拼接痕迹或伪影",
-  ].join("，");
+    "拼接痕迹、白边、伪影、浮空服装",
+  ];
+  if (region === "upper") {
+    negativeItems.push("修改或替换下半身服装（裤子/裙子/鞋子）");
+    negativeItems.push("脑补生成新的下装");
+  } else if (region === "lower") {
+    negativeItems.push("修改或替换上半身服装（上衣/外套）");
+    negativeItems.push("脑补生成新的上衣");
+  } else {
+    negativeItems.push("服装类型偏离目标商品");
+  }
+  const negativePrompt = negativeItems.join("，");
 
   const headers = {
     Authorization: `Bearer ${process.env.IMAGE_API_KEY}`,
@@ -382,12 +433,14 @@ async function callImageApi({ selfie, productImage, prompt }) {
 }
 
 /**
- * 用视觉模型提取自拍照中人物的可见外貌特征。
- * 返回一段具体描述（如"短发、圆脸、中等身材、穿绿色套装、双手自然下垂"），
- * 嵌入试衣 prompt 后可大幅降低模型「用商品图模特替换用户」的概率。
+ * 用视觉模型提取自拍照中人物的"身份锚点"特征。
+ *
+ * 关键：只提取不会因换衣而改变的特征（脸/五官/发型/肤色/体型），
+ * 不描述当前穿着 —— 因为穿着会被替换，描述了反而可能让模型
+ * 把原穿着"锁定"或与目标服装混淆。
  *
  * @param {string} selfieDataUrl 自拍的 dataURL
- * @returns {Promise<string>} 外貌描述文本，失败返回空字符串
+ * @returns {Promise<string>} 身份锚点描述，失败返回空字符串
  */
 async function extractFaceDescription(selfieDataUrl) {
   try {
@@ -409,12 +462,12 @@ async function extractFaceDescription(selfieDataUrl) {
           {
             role: "user",
             content: [
-              { type: "text", text: "请仔细观察这张照片中的人物，用一句话描述其可见的外貌特征。只需描述客观可观察到的：发型（长短/颜色/直卷）、脸型（圆/方/椭圆）、体型（偏瘦/标准/偏胖）、当前穿着的大致款式和颜色、姿势（站姿/手的位置）。不要评价美丑。输出格式：纯中文，不超过60字。" },
+              { type: "text", text: "请仔细观察这张照片中的人物，只描述其【不因换衣而改变】的身份特征，用于后续换装时锁定身份。必须包含：①脸型（圆脸/方脸/瓜子脸/鹅蛋脸等）②五官明显特征（如双眼皮、浓眉、高鼻梁、厚嘴唇等，没有则说『普通』）③发型（长短/直卷/刘海/发色）④肤色（白皙/偏黄/小麦色/偏黑等）⑤体型（偏瘦/标准/偏胖）⑥明显的脸部特征（眼镜/胡须/痣/酒窝等，没有则不写）。禁止描述任何穿着、服装、配饰、姿势、背景。输出格式：纯中文，分号分隔，不超过80字。" },
               { type: "image_url", image_url: { url: selfieDataUrl } },
             ],
           },
         ],
-        max_tokens: 200,
+        max_tokens: 220,
       }),
     });
 
@@ -428,28 +481,37 @@ async function extractFaceDescription(selfieDataUrl) {
       "";
     // 提取纯文本（去掉 JSON 包装）
     const text = typeof content === "string" ? content : JSON.stringify(content);
-    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 120);
+    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 150);
     return cleaned || "";
   } catch (e) {
-    console.log("[tryon] 人物外貌提取跳过:", e.message);
+    console.log("[tryon] 身份锚点提取跳过:", e.message);
     return ""; // 失败不阻塞主流程
   }
 }
 
 /**
- * 用视觉模型提取商品图中服装的精确视觉细节。
- * 返回一段具体描述（如"浅绿色底、白色花朵和绿叶印花图案、短袖圆领上衣+长裤套装、棉麻质感"），
- * 嵌入 prompt 后可让模型精准还原商品服装而非瞎编纯色。
+ * 用视觉模型提取商品图中目标服装的精确视觉细节。
+ *
+ * 关键改进：传入 region，让视觉模型只描述目标区域的服装，
+ * 忽略模特身上的其它服装（避免描述了模特的整套穿搭，
+ * 导致换装时把没买的部位也一起换掉）。
  *
  * @param {string} productDataUrl 商品图的 dataURL
+ * @param {string} region 目标区域 upper/lower/full
  * @returns {Promise<string>} 服装细节描述，失败返回空字符串
  */
-async function extractGarmentDetail(productDataUrl) {
+async function extractGarmentDetail(productDataUrl, region = "full") {
   try {
     const visionBase = (process.env.VISION_BASE_URL || process.env.IMAGE_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, "");
     const visionKey = process.env.VISION_API_KEY || process.env.IMAGE_API_KEY;
     const visionModel = process.env.VISION_MODEL || "agnes-2.0-flash";
     if (!visionKey) return "";
+
+    const regionHint = {
+      upper: "只描述模特【上半身】穿的服装（上衣/外套等），忽略下半身",
+      lower: "只描述模特【下半身】穿的服装（裤子/裙子等），忽略上半身",
+      full: "描述模特穿的整套服装或连体款式",
+    }[region] || "描述图中主要服装";
 
     const res = await fetch(`${visionBase}/chat/completions`, {
       method: "POST",
@@ -459,18 +521,18 @@ async function extractGarmentDetail(productDataUrl) {
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: "请仔细观察这张图片中的服装（忽略模特），用简洁中文描述这件衣服的视觉细节。必须包含：①主色调和图案（印花/条纹/纯色等）②款式类别（连衣裙/T恤/裤子/套装/外套等）③版型特征（领型、袖长、长短、宽松/修身）④面料质感观感（棉质/丝绸/牛仔/针织等）⑤任何可见的装饰细节（扣子、刺绣、蕾丝等）。输出格式：分条列出，每条一句话，总共不超过100字。" },
+            { type: "text", text: `请仔细观察这张图片中的服装（${regionHint}），用简洁中文描述其视觉细节。必须包含：①主色调和图案（印花/条纹/纯色/格子等）②款式类别（T恤/衬衫/裤子/连衣裙/套装/外套等）③版型特征（领型、袖长、衣长、裤长、宽松/修身）④面料质感观感（棉质/丝绸/牛仔/针织/雪纺等）⑤可见的装饰细节（扣子/刺绣/蕾丝/拉链等）。禁止描述模特的脸、发型、肤色、身材、姿势、背景。输出格式：分条列出，每条一句话，总共不超过120字。` },
             { type: "image_url", image_url: { url: productDataUrl } },
           ],
         }],
-        max_tokens: 300,
+        max_tokens: 350,
       }),
     });
     if (!res.ok) return "";
     const json = await res.json();
     const content = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || "";
     const text = typeof content === "string" ? content : JSON.stringify(content);
-    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 200);
+    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 250);
     return cleaned || "";
   } catch (e) {
     console.log("[tryon] 商品服装细节提取跳过:", e.message);
@@ -504,19 +566,21 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
   const productB64 = productImage ? await resolveToDataUrlCached(productImage) : null;
   log(productB64 ? `商品图已就绪 (${productB64.startsWith("data:") ? "dataURL" : "其他"})` : "商品图拉取失败，走模式 B");
 
-  // ★ 关键步骤：用视觉模型提取自拍中人物的可见外貌特征
-  // 这段描述嵌入 prompt 后，可大幅降低模型「用商品图模特替换用户」的概率
-  // 并行提取：人物外貌 + 商品服装细节
+  // ★ 关键步骤：用视觉模型提取
+  //   ① 自拍中的"身份锚点"（脸/五官/发型/肤色/体型，不描述穿着）
+  //   ② 商品图中目标区域的服装细节（按 region 聚焦，避免描述整套穿搭）
+  // 并行提取，降低总耗时
+  const region = garment?.region || "full";
   const [faceDescription, garmentDetail] = await Promise.all([
     extractFaceDescription(selfie),
-    productB64 ? extractGarmentDetail(productB64) : Promise.resolve(""),
+    productB64 ? extractGarmentDetail(productB64, region) : Promise.resolve(""),
   ]);
   log("视觉提取完成");
-  if (faceDescription) console.log(`[tryon] 人物外貌特征: ${faceDescription}`);
-  if (garmentDetail) console.log(`[tryon] 商品服装细节: ${garmentDetail}`);
+  if (faceDescription) console.log(`[tryon] 身份锚点: ${faceDescription}`);
+  if (garmentDetail) console.log(`[tryon] 商品服装细节 [${region}]: ${garmentDetail}`);
 
   const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, faceDescription, garmentDetail });
-  const image = await callImageApi({ selfie, productImage: productB64, prompt });
+  const image = await callImageApi({ selfie, productImage: productB64, prompt, region });
   log("图像生成完成");
   return { image };
 }
