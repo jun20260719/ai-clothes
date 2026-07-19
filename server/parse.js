@@ -36,20 +36,84 @@ function extractItemId(url) {
  * 淘宝「手机分享短链」(e.tb.cn/h/xxx、m.tb.cn 等) 落地页是 JS 跳转，
  * 真实商品页链接 (item.taobao.com/item.htm?id=...) 嵌在 HTML 里。
  * 这里从落地页 HTML 中提取真实商品链接，供二次带 Cookie 抓取。
+ *
+ * 增强覆盖（解决手机短链落地页提取失败 → interstitial 误判）：
+ *   ① 桌面端 item.taobao.com / detail.tmall.com 完整链接
+ *   ② 移动端 a.m.taobao.com/i{itemId}.htm（手机分享短链常见跳转目标）
+ *   ③ href / location.href / location.replace("...") 里的商品链接
+ *   ④ <meta http-equiv="refresh" content="0;url=..."> 跳转
+ *   ⑤ 短链落地页裸 itemId（11-16 位数字，仅在 baseUrl 是短链时启用，避免误匹配）
+ *
+ * 返回值统一归一化为 item.taobao.com/item.htm?id={itemId}（带 Cookie 二次抓取命中率最高）。
  */
 function extractRedirectTarget(html, baseUrl) {
   if (!html) return null;
   const decoded = html.replace(/&amp;/g, "&").replace(/&#x27;/g, "'");
-  // 直接出现的完整商品链接
+  const isShortLink = /tb\.cn|e\.tb\.cn|m\.tb\.cn/i.test(baseUrl || "");
+
+  // 排除：noitem 错误页（其 location 指向 error.item.taobao.com，不是真实商品）
+  if (html.includes("error/noitem") || html.includes("error.item.taobao.com")) {
+    return null;
+  }
+
+  // 从任意 URL 片段中提取 itemId，归一化为标准商品页
+  const toCanonical = (u) => {
+    if (!u) return null;
+    const idM =
+      u.match(/[?&](?:id|item_id|itemId|num_iid)=(\d{6,})/i) ||
+      u.match(/\/i(\d{6,})\.htm/i) ||
+      u.match(/\/(\d{10,})(?:\.html|\?|$)/);
+    if (idM) return `https://item.taobao.com/item.htm?id=${idM[1]}`;
+    return null;
+  };
+
+  // ① 完整桌面端商品链接（https://item.taobao.com/...）
   const m1 = decoded.match(
     /https?:\/\/(?:item\.taobao\.com|detail\.tmall\.com)\/item\.htm\?[^\s"'<>]+/i,
   );
-  if (m1) return m1[0].replace(/["'\);]+$/, "");
-  // 或写在 href="..." / location="..." 里
-  const m2 = decoded.match(
-    /["']?(?:href|location)\s*[:=]\s*["']([^"']*(?:item\.taobao\.com|detail\.tmall\.com)\/item\.htm[^"']*)/i,
+  if (m1) {
+    const c = toCanonical(m1[0]);
+    if (c) return c;
+  }
+
+  // ② 移动端商品页 a.m.taobao.com/i{itemId}.htm（支持 https:// 或 // 协议相对）
+  const mMobile = decoded.match(
+    /(?:https?:)?\/\/a\.m\.taobao\.com\/i(\d{6,})\.htm[^\s"'<>]*/i,
   );
-  if (m2) return m2[1].replace(/["'\);]+$/, "");
+  if (mMobile) return `https://item.taobao.com/item.htm?id=${mMobile[1]}`;
+
+  // ③ href / location.href / location.replace / location.assign 里的商品链接
+  //    支持协议相对 URL（//item.taobao.com/...）
+  const m2 = decoded.match(
+    /["']?(?:href|location(?:\.href)?|replace|assign)\s*[:=]\s*["']((?:https?:)?\/\/[^"']*(?:item\.taobao\.com|detail\.tmall\.com|a\.m\.taobao\.com)\/(?:item\.htm|i\d+\.htm)[^"']*)/i,
+  );
+  if (m2) {
+    const c = toCanonical(m2[1]);
+    if (c) return c;
+  }
+
+  // ④ meta refresh 跳转
+  const mMeta = decoded.match(
+    /<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["'][^"']*url=(https?:\/\/[^"'\s>]+)/i,
+  );
+  if (mMeta) {
+    const c = toCanonical(mMeta[1]);
+    if (c) return c;
+    if (/taobao|tmall/i.test(mMeta[1]) && !/error\.item/i.test(mMeta[1])) {
+      return mMeta[1].replace(/["'\s>]+$/, "");
+    }
+  }
+
+  // ⑤ 短链落地页裸 itemId（仅短链场景启用，避免普通页面误匹配）
+  //    淘宝 itemId 通常 12-13 位，放宽到 11-16 位兜底
+  //    额外要求：必须是独立数字串（前后有引号/标点），且页面含淘宝特征词
+  if (isShortLink) {
+    const idM = decoded.match(/["'(>\s=:](\d{11,16})["'\s)<,]/);
+    if (idM && /taobao|tmall|tb\.cn|alicdn/i.test(decoded)) {
+      return `https://item.taobao.com/item.htm?id=${idM[1]}`;
+    }
+  }
+
   return null;
 }
 
@@ -138,15 +202,63 @@ const MOBILE_HEADERS = {
 const TAOBAO_COOKIE = (process.env.TAOBAO_COOKIE || "").trim();
 const HAS_COOKIE = TAOBAO_COOKIE.length > 0;
 
-/** 淘宝/天猫链接自动带上登录态 Cookie，其它平台不带 */
+/**
+ * 淘宝/天猫链接自动带上登录态 Cookie，其它平台不带
+ *
+ * 关键：Referer 必须按目标域名区分！
+ *   - tmall.com → Referer: https://www.tmall.com/
+ *   - taobao.com / tb.cn → Referer: https://www.taobao.com/
+ * 否则 item.taobao.com 302 跳转到 detail.tmall.com 时，天猫反爬会
+ * 检测到跨站 Referer（taobao.com），直接返回 5047B login 拦截页。
+ * （实测：同 cookie 同 UA，taobao Referer 被拦截，tmall Referer 拿到 55KB 正常页）
+ */
 function requestHeaders(url) {
-  const h = { ...FETCH_HEADERS, Referer: "https://www.taobao.com/" };
+  const h = { ...FETCH_HEADERS };
+  if (/tmall\.com/i.test(url)) {
+    h.Referer = "https://www.tmall.com/";
+  } else {
+    h.Referer = "https://www.taobao.com/";
+  }
   if (HAS_COOKIE && /taobao\.com|tmall\.com/i.test(url)) {
     h.Cookie = TAOBAO_COOKIE;
   }
   return h;
 }
 export { requestHeaders };
+
+/**
+ * 智能重定向抓取：手动跟随 301/302/303/307/308，每一跳都根据当前 URL 域名
+ * 重新计算 Referer 与 Cookie。fetch 默认的 redirect:"follow" 不会在跳转时
+ * 更新 headers，这是淘宝→天猫跨站跳转被反爬拦截的根因。
+ *
+ * 最多跟随 5 跳，防止无限重定向。
+ */
+async function fetchWithSmartRedirect(url, { headers, ...rest } = {}) {
+  let currentUrl = url;
+  let resp = await fetch(currentUrl, {
+    ...rest,
+    headers: headers || requestHeaders(currentUrl),
+    redirect: "manual",
+  });
+  let hops = 0;
+  while (
+    resp.status >= 300 &&
+    resp.status < 400 &&
+    hops < 5
+  ) {
+    const location = resp.headers.get("location");
+    if (!location) break;
+    // 关键：跟随跳转后，用新 URL 重新计算 headers（Referer / Cookie 按域名区分）
+    currentUrl = new URL(location, currentUrl).href;
+    // 如果调用方显式传了 headers，只更新 Referer；否则用 requestHeaders 全量重建
+    const nextHeaders = headers
+      ? { ...headers, Referer: /tmall\.com/i.test(currentUrl) ? "https://www.tmall.com/" : "https://www.taobao.com/" }
+      : requestHeaders(currentUrl);
+    resp = await fetch(currentUrl, { ...rest, headers: nextHeaders, redirect: "manual" });
+    hops++;
+  }
+  return { resp, finalUrl: currentUrl, hops };
+}
 
 function unescapeJson(s) {
   return (s || "")
@@ -221,6 +333,16 @@ function extractMeta(html) {
   const ogTitle = get('meta[property="og:title"]');
   const twTitle = get('meta[name="twitter:title"]');
   let title = ogTitle || twTitle || $("title").first().text().trim() || "";
+
+  // 天猫新详情页（detail.tmall.com）把真实标题放在
+  // <span class="mainTitle--xxxxx" title="商品标题"> 里，<title> 只有"商品详情"。
+  // 用正则从 HTML 直接提取，避免 cheerio 对动态 class 的处理开销。
+  if (!title || title === "商品详情" || title === "商品详情-天猫Tmall.com") {
+    const mainTitleM = html.match(
+      /<span[^>]*class="[^"]*mainTitle[^"]*"[^>]*title="([^"]{4,200})"/i,
+    );
+    if (mainTitleM) title = mainTitleM[1].trim();
+  }
 
   const ogImage = get('meta[property="og:image"]') || get('meta[property="og:image:url"]');
   const twImage = get('meta[name="twitter:image"]');
@@ -312,6 +434,45 @@ function isInterstitialPage(html, url) {
     html.includes("login.m.taobao.com");
   const noProductData = !html.includes("og:image") && !html.includes('"price"');
   return /taobao|tmall/i.test(url) && hasRedirectScript && noProductData;
+}
+
+/**
+ * 诊断跳转页：提取 window.location.href 目标、识别特殊错误页。
+ * 用于在日志中直接看到 5047B 跳转页到底是什么，免去猜测。
+ *
+ * 返回 { kind, redirectUrl, detail }：
+ *   kind = "noitem"   → 商品不存在/已下架（error.item.taobao.com/error/noitem）
+ *   kind = "login"    → Cookie 已失效（跳转 login.m.taobao.com）
+ *   kind = "captcha"  → 被反爬（含验证码/滑块）
+ *   kind = "redirect" → 正常跳转页，redirectUrl 为跳转目标
+ *   kind = "unknown"  → 未识别
+ */
+function diagnoseInterstitial(html) {
+  const out = { kind: "unknown", redirectUrl: "", detail: "" };
+  if (!html) return out;
+
+  // 提取 window.location.href = "..." / location.replace("...") / location.assign("...")
+  const urlM =
+    html.match(/(?:window\.)?location\.(?:href|replace|assign)\s*=\s*["']([^"']+)["']/i) ||
+    html.match(/location\.(?:href|replace|assign)\s*\(\s*["']([^"']+)["']\s*\)/i);
+  if (urlM) out.redirectUrl = urlM[1];
+
+  // 识别特殊页面
+  const lower = html.toLowerCase();
+  if (html.includes("error/noitem") || html.includes("error.item.taobao.com")) {
+    out.kind = "noitem";
+    out.detail = "商品不存在或已下架";
+  } else if (html.includes("login.m.taobao.com") || /login\s*\.\s*taobao/i.test(html)) {
+    out.kind = "login";
+    out.detail = "Cookie 已失效，需重新登录淘宝复制 Cookie";
+  } else if (html.includes("验证码") || html.includes("安全验证") || html.includes("滑块") || /captcha/i.test(lower)) {
+    out.kind = "captcha";
+    out.detail = "被淘宝反爬拦截，请稍后重试或更换网络";
+  } else if (out.redirectUrl) {
+    out.kind = "redirect";
+    out.detail = "JS 跳转页";
+  }
+  return out;
 }
 
 /**
@@ -449,19 +610,18 @@ export async function parseProductPage(url) {
   let html = "";
   try {
     // 第一跳：抓取落地页（短链 e.tb.cn 会返回 200 的 HTML，内含真实商品链接）
-    const resp1 = await fetch(url, { headers: requestHeaders(url), redirect: "follow" });
+    // 使用 smart redirect：每跳重新设置 Referer/Cookie，避免跨站跳转被反爬拦截
+    const { resp: resp1, finalUrl: fu1 } = await fetchWithSmartRedirect(url);
     if (!resp1.ok) throw new Error(`抓取失败：HTTP ${resp1.status}`);
     let h1 = await resp1.text();
+    finalUrl = fu1;
 
     // 短链解析：从落地页 HTML 提取真实商品页链接，二次带 Cookie 抓取（拿到真实详情）
     const resolved = extractRedirectTarget(h1, url);
     if (resolved && resolved !== url) {
       finalUrl = resolved;
       try {
-        const resp2 = await fetch(finalUrl, {
-          headers: requestHeaders(finalUrl),
-          redirect: "follow",
-        });
+        const { resp: resp2 } = await fetchWithSmartRedirect(resolved);
         if (resp2.ok) h1 = await resp2.text();
       } catch {
         /* 二次抓取失败则沿用第一跳 HTML */
@@ -469,29 +629,102 @@ export async function parseProductPage(url) {
     }
     html = h1;
 
-    // 桌面端 UA 可能拿到天猫/淘宝的 JS 中间跳转页（非真实商品数据），
-    // 自动切换为移动端 UA 重试（移动端通常返回含 og:image 的 H5 页面）。
+    // 桌面端 UA 可能拿到天猫/淘宝的 JS 中间跳转页（非真实商品数据）。
+    // 手机分享短链（m.tb.cn / e.tb.cn）落地页也是跳转页，跳转目标常是
+    // 移动端商品页 a.m.taobao.com/i{id}.htm。
+    // 处理顺序：① 先诊断跳转页类型（noitem/login/captcha/redirect）
+    //          ② 正常 redirect → 用增强提取取真实商品链接 → 带 Cookie 二次抓取
+    //          ③ 提取不到 → 移动端 UA 重试（兜底）
+    //          ④ 仍失败 → 走轻量详情接口 / 视觉识别 / 兜底
+    //          注意：smart redirect 已经解决了 item.taobao.com → detail.tmall.com
+    //          跨站跳转 Referer 不更新的问题，login interstitial 在 smart redirect
+    //          下若仍出现才视为真正 cookie 失效。
     if (isInterstitialPage(html, finalUrl) && /taobao|tmall/i.test(finalUrl)) {
-      console.log(`[parse] Detected interstitial page (${html.length}B), retrying with mobile UA...`);
-      try {
-        const mobileHeaders = { ...requestHeaders(finalUrl), ...MOBILE_HEADERS };
-        delete mobileHeaders.Cookie; // 移动端 Cookie 格式不同，避免冲突
-        const respM = await fetch(finalUrl, {
-          headers: mobileHeaders,
-          redirect: "follow",
-        });
-        if (respM.ok) {
-          const hMobile = await respM.text();
-          if (!isInterstitialPage(hMobile, finalUrl)) {
-            console.log(`[parse] Mobile UA got ${hMobile.length}B HTML (was ${html.length}B)`);
-            html = hMobile;
+      const diag = diagnoseInterstitial(html);
+      console.log(
+        `[parse] Detected interstitial page (${html.length}B), kind=${diag.kind}` +
+          (diag.redirectUrl ? `, redirectUrl=${diag.redirectUrl.slice(0, 80)}` : "") +
+          (diag.detail ? `, ${diag.detail}` : ""),
+      );
+
+      // noitem/captcha：明确报错，不再盲目重试
+      if (diag.kind === "noitem") {
+        throw new Error("商品不存在或已下架，请检查链接是否正确");
+      }
+      if (diag.kind === "captcha") {
+        throw new Error("被淘宝反爬拦截（验证码），请稍后重试或更换网络环境");
+      }
+
+      // ① redirect/login 类型：从跳转页 HTML 提取真实商品链接，smart redirect 二次抓取
+      //    login 类型不直接报错——可能是中间页跳转链路问题，先尝试提取真实 URL 重新抓
+      const resolved2 = extractRedirectTarget(html, finalUrl);
+      if (resolved2 && resolved2 !== finalUrl) {
+        console.log(`[parse] Resolved real URL from interstitial: ${resolved2.slice(0, 80)}`);
+        try {
+          const { resp: resp2, finalUrl: fu2 } = await fetchWithSmartRedirect(resolved2);
+          if (resp2.ok) {
+            const h2 = await resp2.text();
+            if (!isInterstitialPage(h2, fu2)) {
+              console.log(`[parse] Second fetch got ${h2.length}B real product HTML (finalUrl=${fu2.slice(0, 60)})`);
+              html = h2;
+              finalUrl = fu2;
+            } else {
+              // 二次抓取仍是跳转页，诊断一下
+              const diag2 = diagnoseInterstitial(h2);
+              console.log(`[parse] Second fetch still interstitial: kind=${diag2.kind}${diag2.redirectUrl ? ", url=" + diag2.redirectUrl.slice(0, 60) : ""}`);
+              if (diag2.kind === "noitem") throw new Error("商品不存在或已下架，请检查链接是否正确");
+              if (diag2.kind === "login") throw new Error("淘宝 Cookie 已失效，请重新登录淘宝并更新 server/.env 中的 TAOBAO_COOKIE");
+            }
           }
+        } catch (e) {
+          // noitem/login 明确错误需要抛出，网络错误继续尝试移动端
+          if (String(e.message).includes("Cookie 已失效") || String(e.message).includes("商品不存在")) throw e;
+          /* 二次抓取失败，继续尝试移动端重试 */
         }
-      } catch {
-        /* mobile retry failed, stick with desktop result */
+      } else {
+        console.log(`[parse] extractRedirectTarget returned null, html head: ${html.substring(0, 200).replace(/\n/g, " ")}`);
+      }
+
+      // ② 仍是 interstitial → 移动端 UA 重试兜底（smart redirect）
+      if (isInterstitialPage(html, finalUrl)) {
+        console.log(`[parse] Still interstitial, retrying with mobile UA on ${finalUrl.slice(0, 60)}...`);
+        try {
+          const mobileHeaders = { ...requestHeaders(finalUrl), ...MOBILE_HEADERS };
+          delete mobileHeaders.Cookie; // 移动端 Cookie 格式不同，避免冲突
+          const { resp: respM, finalUrl: fuM } = await fetchWithSmartRedirect(finalUrl, {
+            headers: mobileHeaders,
+          });
+          if (respM.ok) {
+            const hMobile = await respM.text();
+            if (!isInterstitialPage(hMobile, fuM)) {
+              console.log(`[parse] Mobile UA got ${hMobile.length}B HTML (was ${html.length}B)`);
+              html = hMobile;
+              finalUrl = fuM;
+            } else {
+              const diagM = diagnoseInterstitial(hMobile);
+              console.log(`[parse] Mobile UA still interstitial: kind=${diagM.kind}${diagM.redirectUrl ? ", url=" + diagM.redirectUrl.slice(0, 60) : ""}`);
+            }
+          }
+        } catch {
+          /* mobile retry failed, stick with desktop result */
+        }
+      }
+
+      // ③ smart redirect + 移动端都失败后，若是 login 类型才报 cookie 失效
+      if (isInterstitialPage(html, finalUrl)) {
+        const diagFinal = diagnoseInterstitial(html);
+        if (diagFinal.kind === "login") {
+          throw new Error("淘宝 Cookie 已失效，请重新登录淘宝并更新 server/.env 中的 TAOBAO_COOKIE");
+        }
       }
     }
-  } catch {
+  } catch (e) {
+    // 明确错误（商品不存在 / Cookie 失效 / 反爬拦截）需传播给用户，不吞掉
+    const msg = String(e?.message || "");
+    if (msg.includes("商品不存在") || msg.includes("Cookie 已失效") || msg.includes("反爬拦截")) {
+      throw e;
+    }
+    // 其它网络错误：降级为空 html，走兜底
     html = "";
   }
 
@@ -630,6 +863,7 @@ export async function parseProductPage(url) {
     incomplete,
     garments,
     mock: false,
+    itemId: extractItemId(finalUrl),
     cookieUsed: HAS_COOKIE && /taobao|tmall/.test(platform),
   };
 }
