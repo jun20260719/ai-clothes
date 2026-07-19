@@ -19,6 +19,7 @@ import { SelfieUpload } from "@/components/SelfieUpload";
 import { BodyMeasurements } from "@/components/BodyMeasurements";
 import { TryOnResult } from "@/components/TryOnResult";
 import { generateTryOn } from "@/lib/tryon";
+import { estimateBodyViaApi } from "@/lib/api";
 import type {
   BodyMeasurements as BM,
   Garment,
@@ -72,9 +73,9 @@ function saveMeasurements(m: BM) {
 }
 
 const FEATURES = [
-  { icon: Link2, title: "一键粘贴链接", desc: "复制各大平台的商品链接，自动识别是否为服装" },
   { icon: Camera, title: "上传自拍", desc: "上传或拍摄一张照片，即可在线试穿" },
   { icon: Ruler, title: "补充身体数据", desc: "填写身高体重三围，试衣版型更贴合逼真" },
+  { icon: Link2, title: "一键粘贴链接", desc: "复制各大平台的商品链接，自动识别是否为服装" },
 ];
 
 export default function App() {
@@ -90,14 +91,7 @@ export default function App() {
   }, [measurements]);
   const [result, setResult] = useState<TR | null>(null);
   const [generating, setGenerating] = useState(false);
-
-  const step = result
-    ? 4
-    : selfieImg
-      ? 3
-      : product?.isClothing
-        ? 2
-        : 1;
+  const [estimating, setEstimating] = useState(false);
 
   const selectedGarment: Garment | undefined = product?.garments.find(
     (g) => g.id === selectedId,
@@ -109,6 +103,17 @@ export default function App() {
     selfieImg &&
     !generating
   );
+
+  // 新流程顺序：① 上传自拍 → ② 身体数据 → ③ 粘贴链接 → ④ 生成试衣
+  const step = result
+    ? 4
+    : canGenerate || generating
+      ? 4
+      : product?.isClothing && selectedGarment
+        ? 3
+        : selfieImg
+          ? 2
+          : 1;
 
   async function generate() {
     if (!selectedGarment || !selfieImg) return;
@@ -133,6 +138,31 @@ export default function App() {
     setProduct(null);
     setSelectedId(null);
     setResult(null);
+  }
+
+  /** AI 识别身体数据：上传全身照后一键估算并回填（已有值不被覆盖，便于微调） */
+  async function handleEstimateBody() {
+    if (!selfieUrl) return;
+    setEstimating(true);
+    try {
+      const est = await estimateBodyViaApi(selfieUrl);
+      setMeasurements((prev) => ({
+        gender: est.gender || prev.gender,
+        height: est.height ?? prev.height,
+        weight: est.weight ?? prev.weight,
+        bust: est.bust ?? prev.bust,
+        waist: est.waist ?? prev.waist,
+        hips: est.hips ?? prev.hips,
+        shoulder: est.shoulder ?? prev.shoulder,
+      }));
+      toast.success("已根据照片估算身体数据，请核对后微调");
+    } catch (e) {
+      const code = (e as Error & { code?: string }).code;
+      if (code === "NO_VISION") toast.error("未配置视觉识别模型，无法自动识别");
+      else toast.error("身体数据识别失败，请手动填写");
+    } finally {
+      setEstimating(false);
+    }
   }
 
   function handleAddManual(g: Garment) {
@@ -175,23 +205,9 @@ export default function App() {
             先穿在<span className="text-primary">自己</span>身上看看
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-sm text-muted-foreground sm:text-base">
-            粘贴购物平台的商品链接，自动识别服装；上传一张自拍照，AI 帮你预览穿上身的效果，
-            补充身体数据还能更逼真。
+            上传一张自拍照并补充身体数据，AI 帮你预览穿上身的效果；再粘贴购物平台的商品链接，
+            自动识别服装并试穿，数据越全越逼真。
           </p>
-
-          <div className="mx-auto mt-8 max-w-2xl">
-            <Card className="border-border/60 shadow-lg">
-              <CardContent className="p-4 sm:p-5">
-                <LinkInput
-                  onParsed={(p) => {
-                    setProduct(p);
-                    setSelectedId(p.isClothing ? p.garments[0]?.id ?? null : null);
-                    setResult(null);
-                  }}
-                />
-              </CardContent>
-            </Card>
-          </div>
 
           <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
             {FEATURES.map((f) => (
@@ -215,7 +231,86 @@ export default function App() {
         </div>
 
         <div className="space-y-6">
-          {/* 步骤2：商品 + 服装选择 */}
+          {/* 步骤1+2：上传自拍 + 身体数据（始终可见，先填好再选商品） */}
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            <Card className="border-border/60">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Camera className="h-4 w-4 text-primary" />
+                  上传你的自拍
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SelfieUpload
+                  selfieUrl={selfieUrl}
+                  onCaptured={(url, img) => {
+                    setSelfieUrl(url);
+                    setSelfieImg(img);
+                  }}
+                  onRemove={() => {
+                    setSelfieUrl(null);
+                    setSelfieImg(null);
+                    setResult(null);
+                  }}
+                />
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/60">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Ruler className="h-4 w-4 text-primary" />
+                  身体数据
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="ml-auto"
+                    onClick={handleEstimateBody}
+                    disabled={!selfieUrl || estimating}
+                    title={
+                      selfieUrl
+                        ? "根据上传的照片估算身体数据"
+                        : "请先上传一张全身照片"
+                    }
+                  >
+                    {estimating ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="mr-1.5 h-4 w-4" />
+                    )}
+                    AI 识别
+                  </Button>
+                </CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  可选 · 越全越逼真 · 上传全身照后可点「AI 识别」自动估算（仅供参考，可微调）
+                </p>
+              </CardHeader>
+              <CardContent>
+                <BodyMeasurements value={measurements} onChange={setMeasurements} />
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* 步骤3：粘贴商品链接 */}
+          <Card className="border-border/60">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Link2 className="h-4 w-4 text-primary" />
+                粘贴商品链接
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <LinkInput
+                onParsed={(p) => {
+                  setProduct(p);
+                  setSelectedId(p.isClothing ? p.garments[0]?.id ?? null : null);
+                  setResult(null);
+                }}
+              />
+            </CardContent>
+          </Card>
+
+          {/* 已识别商品 + 服装选择 */}
           {product && (
             <Card className="border-border/60">
               <CardHeader className="pb-3">
@@ -234,49 +329,6 @@ export default function App() {
                 />
               </CardContent>
             </Card>
-          )}
-
-          {/* 步骤3：自拍 + 身体数据 */}
-          {product?.isClothing && selectedGarment && (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              <Card className="border-border/60">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Camera className="h-4 w-4 text-primary" />
-                    上传你的自拍
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <SelfieUpload
-                    selfieUrl={selfieUrl}
-                    onCaptured={(url, img) => {
-                      setSelfieUrl(url);
-                      setSelfieImg(img);
-                    }}
-                    onRemove={() => {
-                      setSelfieUrl(null);
-                      setSelfieImg(null);
-                      setResult(null);
-                    }}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border/60">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Ruler className="h-4 w-4 text-primary" />
-                    身体数据
-                    <span className="ml-auto text-xs font-normal text-muted-foreground">
-                      可选 · 越全越逼真
-                    </span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <BodyMeasurements value={measurements} onChange={setMeasurements} />
-                </CardContent>
-              </Card>
-            </div>
           )}
 
           {/* 生成按钮 */}

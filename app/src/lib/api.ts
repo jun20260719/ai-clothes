@@ -46,3 +46,29 @@ export async function tryOnViaApi(
   }
   return { image: data.image as string };
 }
+
+/** AI 识别身体数据：上传人物照片（dataURL），视觉模型估算身高/体重/三围/肩宽 */
+export interface BodyEstimate {
+  gender: "female" | "male" | "";
+  height: number | null;
+  weight: number | null;
+  bust: number | null;
+  waist: number | null;
+  hips: number | null;
+  shoulder: number | null;
+}
+
+export async function estimateBodyViaApi(image: string): Promise<BodyEstimate> {
+  const resp = await fetch(`${API_BASE}/estimate-body`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image }),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) {
+    const e = new Error(data.error || `识别失败 (${resp.status})`);
+    (e as Error & { code?: string }).code = data.code;
+    throw e;
+  }
+  return data.measurements as BodyEstimate;
+}

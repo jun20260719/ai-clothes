@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["粘贴链接", "上传自拍", "身体数据", "生成试衣"];
+const STEPS = ["上传自拍", "身体数据", "粘贴链接", "生成试衣"];
 
 export function StepIndicator({ current }: { current: number }) {
   return (

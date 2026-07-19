@@ -6,7 +6,7 @@ import express from "express";
 import cors from "cors";
 import { parseProductPage } from "./parse.js";
 import { runTryOn, resolveToDataUrl } from "./tryon.js";
-import { visionConfigured, visionModel } from "./vision.js";
+import { visionConfigured, visionModel, estimateBodyFromImage } from "./vision.js";
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -60,6 +60,30 @@ app.post("/api/tryon", async (req, res) => {
       code: e.code,
       error: e.message,
     });
+  }
+});
+
+// ③ AI 识别身体数据（上传全身照 → 视觉模型估算身高/体重/三围/肩宽）
+app.post("/api/estimate-body", async (req, res) => {
+  const { image } = req.body || {};
+  if (!image) {
+    return res.status(400).json({ ok: false, error: "缺少 image（人物照片）" });
+  }
+  if (!visionConfigured) {
+    return res
+      .status(503)
+      .json({ ok: false, code: "NO_VISION", error: "未配置视觉识别模型（VISION_API_KEY / VISION_MODEL）" });
+  }
+  try {
+    const measurements = await estimateBodyFromImage(image);
+    if (!measurements) {
+      return res
+        .status(502)
+        .json({ ok: false, error: "身体数据识别失败，请手动填写或换一张更清晰的全身照" });
+    }
+    res.json({ ok: true, measurements });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message || "识别失败" });
   }
 });
 
