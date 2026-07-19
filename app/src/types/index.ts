@@ -63,6 +63,8 @@ export interface ParsedProduct {
   itemId?: string;
   /** 是否使用淘宝登录态 Cookie 完成识别 */
   cookieUsed?: boolean;
+  /** 是否由 AI 视觉模型通过商品图自动识别补全（区别于纯文本解析 / 手动选择） */
+  aiRecognized?: boolean;
 }
 
 /** 用户身体数据（均可选，越多越逼真） */

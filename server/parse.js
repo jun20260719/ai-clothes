@@ -1,4 +1,9 @@
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import dotenv from "dotenv";
+dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), ".env") });
 import * as cheerio from "cheerio";
+import { recognizeProductImage } from "./vision.js";
 
 /* ── 平台识别 ── */
 const PLATFORM_RULES = [
@@ -81,6 +86,24 @@ const REGION_MAP = {
   jacket: "upper", coat: "full", dress: "full", skirt: "lower",
   pants: "lower", shorts: "lower", tanktop: "upper", other: "upper",
 };
+/** 后端服装类型中文名（用于 AI 识别结果的 garment.name） */
+const GARMENT_LABELS = {
+  tshirt: "T恤", shirt: "衬衫", hoodie: "卫衣", sweater: "毛衣", jacket: "夹克",
+  coat: "大衣/外套", dress: "连衣裙", skirt: "半身裙", pants: "裤子",
+  shorts: "短裤", tanktop: "背心/吊带", other: "服装",
+};
+
+function makeGarment(type, name, color, region) {
+  const c = color || "#7c3aed";
+  return {
+    id: `g-${Date.now().toString(36)}`,
+    type,
+    name: name || GARMENT_LABELS[type] || "服装",
+    color: c,
+    accentColor: c,
+    region: region || REGION_MAP[type] || "upper",
+  };
+}
 function isClothingTitle(t) {
   const s = (t || "").toLowerCase();
   return CLOTHING_KEYWORDS.some((k) => s.includes(k.toLowerCase()));
@@ -101,6 +124,13 @@ const FETCH_HEADERS = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
   "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+};
+
+/** 移动端 UA（部分平台对桌面 UA 返回 JS 中间跳转页，移动端返回真实数据） */
+const MOBILE_HEADERS = {
+  ...FETCH_HEADERS,
+  "User-Agent":
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 };
 
 /* ── 淘宝/天猫登录态 Cookie（环境变量注入，用于绕过反爬拿到真实商品数据）──
@@ -135,23 +165,42 @@ function stripTitleSuffix(t) {
     .trim();
 }
 
-/** 从页面内嵌 <script> JSON 中兜底提取标题/主图/价格（登录态下命中率更高） */
+/** 从页面内嵌 <script> JSON 中兜底提取标题/主图/价格/店铺（登录态下命中率更高） */
 function extractEmbedded(html) {
-  const out = { title: "", price: null, image: "" };
+  const out = { title: "", price: null, image: "", shop: "" };
+  // 标题：覆盖淘宝常见键名（title / titleText / subTitle / itemName / name）
   const titleM =
+    html.match(/"titleText"\s*:\s*"((?:[^"\\]|\\.){4,200})"/i) ||
+    html.match(/"subTitle"\s*:\s*"((?:[^"\\]|\\.){4,200})"/i) ||
+    html.match(/"itemName"\s*:\s*"((?:[^"\\]|\\.){4,200})"/i) ||
     html.match(/"title"\s*:\s*"((?:[^"\\]|\\.){4,200})"/i) ||
     html.match(/"name"\s*:\s*"((?:[^"\\]|\\.){4,200})"/i);
   if (titleM) out.title = unescapeJson(titleM[1]);
+
+  // 价格：覆盖 salePrice / priceInfo / priceText / skuPrice / realPrice / lowPrice / highPrice / price
   const priceM =
-    html.match(/"price"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
+    html.match(/"salePrice"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
+    html.match(/"priceInfo"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
     html.match(/"priceText"\s*:\s*"([\d.]+)"/i) ||
-    html.match(/"skuPrice"\s*:\s*"(\d+(?:\.\d+)?)"/i);
+    html.match(/"skuPrice"\s*:\s*"(\d+(?:\.\d+)?)/i) ||
+    html.match(/"realPrice"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
+    html.match(/"lowPrice"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
+    html.match(/"highPrice"\s*:\s*"?(\d+(?:\.\d+)?)/i) ||
+    html.match(/"price"\s*:\s*"?(\d+(?:\.\d+)?)/i);
   if (priceM) {
     const n = parseFloat(priceM[1]);
     if (!Number.isNaN(n)) out.price = n;
   }
+
+  // 店铺名
+  const shopM =
+    html.match(/"shopName"\s*:\s*"((?:[^"\\]|\\.){1,60})"/i) ||
+    html.match(/"sellerName"\s*:\s*"((?:[^"\\]|\\.){1,60})"/i) ||
+    html.match(/"shopTitle"\s*:\s*"((?:[^"\\]|\\.){1,60})"/i);
+  if (shopM) out.shop = unescapeJson(shopM[1]);
+
   const imgM = html.match(
-    /"(?:pic|picUrl|imgUrl|mainImage|image|images)"\s*:\s*"(https?:)?(\/\/[^"]+?\.(?:jpg|jpeg|png|webp))"/i,
+    /"(?:pic|picUrl|imgUrl|mainImage|image|images|originalImage)"\s*:\s*"(https?:)?(\/\/[^"]+?\.(?:jpg|jpeg|png|webp))"/i,
   );
   if (imgM) out.image = imgM[1] ? imgM[1] + imgM[2] : "https:" + imgM[2];
   if (!out.image) {
@@ -223,10 +272,12 @@ function extractMeta(html) {
   if (!title && emb.title) title = emb.title;
   if (!image && emb.image) image = emb.image;
   if (price == null && emb.price != null) price = emb.price;
+  let shop = get('meta[property="og:site_name"]') || emb.shop || "";
 
   if (title) title = stripTitleSuffix(title);
+  // 主图归一化为绝对 URL（淘宝常返回 //img.alicdn.com/...）
+  if (image && image.startsWith("//")) image = "https:" + image;
 
-  const shop = get('meta[property="og:site_name"]') || "";
   return { title, image, price, shop, hasImage: !!image };
 }
 
@@ -248,6 +299,79 @@ function isAntiCrawl({ title, url }) {
   return false;
 }
 
+/**
+ * 检测是否为天猫/淘宝的 JS 中间跳转页（而非真实商品详情）。
+ * 这类页面通常：<10KB、包含 localStorage.x5referer / a-link 脚本、无 og:image
+ */
+function isInterstitialPage(html, url) {
+  if (!html || html.length > 20000) return false;
+  const hasRedirectScript =
+    html.includes("localStorage.x5referer") ||
+    html.includes('id="a-link"') ||
+    html.includes("window.location.href") ||
+    html.includes("login.m.taobao.com");
+  const noProductData = !html.includes("og:image") && !html.includes('"price"');
+  return /taobao|tmall/i.test(url) && hasRedirectScript && noProductData;
+}
+
+/**
+ * 天猫/淘宝轻量详情接口（无需签名，返回含标题/价格/图片的 HTML 片段）。
+ * 当主抓取拿到中间跳转页时作为最后手段调用。
+ */
+async function fetchLightDetail(itemId, platform) {
+  if (!itemId) return null;
+  // 天猫轻量详情
+  const urls = [
+    `https://detailskip.taobao.com/service/getData/1/p1/item/detail/sib.htm?itemId=${itemId}&sellerId=&sid=&appId=300`,
+    `https://h5api.m.taobao.com/h5/mtop.taobao.idle.detail.get/1.0/?data={"itemNumId":"${itemId}"}`,
+  ];
+  for (const url of urls) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(url, {
+        headers: {
+          "User-Agent": MOBILE_HEADERS["User-Agent"],
+          Referer: platform === "tmall"
+            ? `https://detail.tmall.com/item.htm?id=${itemId}`
+            : `https://item.taobao.com/item.htm?id=${itemId}`,
+          Accept: "*/*",
+        },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!r.ok) continue;
+      const text = await r.text();
+      // 轻量接口可能返回 HTML 片段或 JSONP
+      if (text.includes("title") || text.includes("price") || text.includes("img")) {
+        console.log(`[parse] Light detail got ${text.length}B from ${new URL(url).pathname}`);
+        return text;
+      }
+    } catch {
+      /* continue to next URL */
+    }
+  }
+  return null;
+}
+
+/** 从轻量详情响应中提取信息 */
+function parseLightDetail(text) {
+  const out = { title: "", price: null, image: "", shop: "" };
+  // 标题
+  const tM = text.match(/["']?title["']?\s*[:=]\s*["']([^"']{4,200})["']/i);
+  if (tM) out.title = unescapeJson(tM[1]);
+  // 价格（数字）
+  const pM = text.match(/["']?price["']?\s*[:=]\s*"?(\d+\.?\d*)"?/i);
+  if (pM) { const n = parseFloat(pM[1]); if (!Number.isNaN(n)) out.price = n; }
+  // 图片 URL
+  const iM = text.match(/(https?:\/\/(?:img|gw)\.(alicdn|taobaocdn|tbcdn)[^"'\s>]+\.(?:jpg|jpeg|png|webp))/i);
+  if (iM) out.image = iM[1];
+  // 店铺
+  const sM = text.match(/["']?(?:shopName|shopTitle|sellerName|nick)["']?\s*[:=]\s*"([^"]{2,60})"/i);
+  if (sM) out.shop = unescapeJson(sM[1]);
+  return out;
+}
+
 /** 抓取失败 / 被反爬拦截时的兜底：购物平台默认当作可试衣，引导端上手动确认服装 */
 function buildFallback(platform, url) {
   const itemId = extractItemId(url);
@@ -266,6 +390,50 @@ function buildFallback(platform, url) {
     garments: [],
     mock: false,
     cookieUsed: HAS_COOKIE && /taobao|tmall/.test(platform),
+  };
+}
+
+/** 视觉识别兜底：用商品图补全标题/价格/服装；失败返回 null */
+async function tryVision(platform, finalUrl, meta) {
+  if (!meta.image) return null;
+  console.log(`[parse] Vision fallback triggered: image=${meta.image.substring(0, 80)}...`);
+  const rec = await recognizeProductImage(meta.image);
+  if (!rec) {
+    console.log(`[parse] Vision returned null, skipping`);
+    return null;
+  }
+  console.log(`[parse] Vision result: title="${rec.title}" price=${rec.price} type=${rec.garmentType}`);
+
+  const garments = [];
+  if (rec.garmentType && rec.garmentType !== "other") {
+    garments.push(
+      makeGarment(rec.garmentType, rec.title || GARMENT_LABELS[rec.garmentType], rec.color, rec.region),
+    );
+  } else if (rec.title && isClothingTitle(rec.title)) {
+    const type = detectType(rec.title);
+    garments.push(
+      makeGarment(type, rec.title, rec.color || detectColor(rec.title), REGION_MAP[type] || "upper"),
+    );
+  }
+
+  const title =
+    rec.title || (meta.title && meta.title !== finalUrl ? meta.title : `「${PLATFORM_NAME[platform]}商品」`);
+  const price = rec.price != null ? rec.price : (meta.price ?? 0);
+
+  return {
+    url: finalUrl,
+    platform,
+    title,
+    imageUrl: meta.image || "",
+    price,
+    shop: meta.shop || "",
+    isClothing: true,
+    incomplete: garments.length === 0,
+    garments,
+    mock: false,
+    itemId: extractItemId(finalUrl),
+    cookieUsed: HAS_COOKIE && /taobao|tmall/.test(platform),
+    aiRecognized: true,
   };
 }
 
@@ -300,6 +468,29 @@ export async function parseProductPage(url) {
       }
     }
     html = h1;
+
+    // 桌面端 UA 可能拿到天猫/淘宝的 JS 中间跳转页（非真实商品数据），
+    // 自动切换为移动端 UA 重试（移动端通常返回含 og:image 的 H5 页面）。
+    if (isInterstitialPage(html, finalUrl) && /taobao|tmall/i.test(finalUrl)) {
+      console.log(`[parse] Detected interstitial page (${html.length}B), retrying with mobile UA...`);
+      try {
+        const mobileHeaders = { ...requestHeaders(finalUrl), ...MOBILE_HEADERS };
+        delete mobileHeaders.Cookie; // 移动端 Cookie 格式不同，避免冲突
+        const respM = await fetch(finalUrl, {
+          headers: mobileHeaders,
+          redirect: "follow",
+        });
+        if (respM.ok) {
+          const hMobile = await respM.text();
+          if (!isInterstitialPage(hMobile, finalUrl)) {
+            console.log(`[parse] Mobile UA got ${hMobile.length}B HTML (was ${html.length}B)`);
+            html = hMobile;
+          }
+        }
+      } catch {
+        /* mobile retry failed, stick with desktop result */
+      }
+    }
   } catch {
     html = "";
   }
@@ -307,6 +498,23 @@ export async function parseProductPage(url) {
   const meta = html
     ? extractMeta(html)
     : { title: "", image: "", price: null, shop: "", hasImage: false };
+
+  // 轻量详情兜底：桌面+移动端都没拿到有效数据时，尝试轻量接口
+  const itemId = extractItemId(finalUrl);
+  const plat = detectPlatform(finalUrl);
+  if (!meta.hasImage && !meta.title && /taobao|tmall/i.test(finalUrl) && itemId) {
+    console.log(`[parse] Main fetch empty, trying light detail API for item ${itemId}...`);
+    const lightHtml = await fetchLightDetail(itemId, plat);
+    if (lightHtml) {
+      const light = parseLightDetail(lightHtml);
+      console.log(`[parse] Light detail: title="${light.title}" price=${light.price} img=${light.image ? "YES" : "NO"}`);
+      if (!meta.title && light.title) meta.title = stripTitleSuffix(light.title);
+      if (meta.price == null && light.price != null) meta.price = light.price;
+      if (!meta.image && light.image) meta.image = light.image;
+      if (!meta.shop && light.shop) meta.shop = light.shop;
+      meta.hasImage = !!meta.image;
+    }
+  }
 
   // 抓取为空，或被反爬/拦截页 → 兜底
   if (!html || isAntiCrawl({ title: meta.title, hasImage: meta.hasImage, url: finalUrl })) {
@@ -324,6 +532,11 @@ export async function parseProductPage(url) {
         garments: [],
         mock: false,
       };
+    }
+    // 购物平台：即使被拦截，只要有主图就先尝试「视觉识别」补全商品信息
+    if (meta.hasImage) {
+      const rec = await tryVision(platform, finalUrl, meta);
+      if (rec) return rec;
     }
     return buildFallback(platform, finalUrl);
   }
@@ -372,6 +585,40 @@ export async function parseProductPage(url) {
       incomplete = true;
     }
   }
+
+  // 视觉识别兜底：购物平台 + 有主图，但服装未识别 / 缺价格 / 缺标题时，
+  // 用商品图自动补全（HTML 已确认的字段优先，缺失的才用视觉补）。
+  const needsVision =
+    platform !== "unknown" &&
+    meta.hasImage &&
+    (garments.length === 0 || meta.price == null || !meta.title || meta.title === finalUrl);
+  if (needsVision) {
+    console.log(`[parse] Needs vision: hasImage=${meta.hasImage} garments=${garments.length} title=${meta.title ? '"' + meta.title.substring(0,40) + '"' : 'EMPTY'} price=${meta.price}`);
+    const rec = await tryVision(platform, finalUrl, meta);
+    if (rec) {
+      const mergedGarments = garments.length > 0 ? garments : rec.garments;
+      const mergedTitle =
+        meta.title && meta.title !== finalUrl ? meta.title : rec.title;
+      const mergedPrice =
+        meta.price != null && meta.price !== 0 ? meta.price : rec.price || 0;
+      return {
+        url: finalUrl,
+        platform,
+        title: mergedTitle,
+        imageUrl: meta.image || "",
+        price: mergedPrice,
+        shop: meta.shop || "",
+        isClothing: true,
+        incomplete: mergedGarments.length === 0,
+        garments: mergedGarments,
+        mock: false,
+        itemId: extractItemId(finalUrl),
+        cookieUsed: HAS_COOKIE && /taobao|tmall/.test(platform),
+        aiRecognized: true,
+      };
+    }
+  }
+
   return {
     url: finalUrl,
     platform,

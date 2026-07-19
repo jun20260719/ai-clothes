@@ -77,6 +77,11 @@ export function ProductCard({
               登录态识别
             </Badge>
           )}
+          {product.aiRecognized && (
+            <Badge variant="secondary" className="gap-1 bg-emerald-100 text-emerald-700">
+              AI 识别
+            </Badge>
+          )}
           <span className="ml-auto text-lg font-bold text-primary">
             {product.price ? `¥${product.price}` : "价格未知"}
           </span>
@@ -104,8 +109,9 @@ export function ProductCard({
                 <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                   <Tag className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>
-                    未能自动获取完整商品信息（已识别标题，但主图缺失或服装类型未自动识别）。
-                    请手动选择服装类型与颜色，即可继续试衣。
+                    {product.aiRecognized
+                      ? "AI 已通过商品图识别到部分信息，但服装类型仍无法确定，请手动选择以继续。"
+                      : "未能自动获取完整商品信息（已识别标题，但主图缺失或服装类型未自动识别）。请手动选择服装类型与颜色，即可继续试衣。"}
                   </span>
                 </div>
               )}

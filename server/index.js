@@ -1,8 +1,12 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), ".env") });
 import express from "express";
 import cors from "cors";
 import { parseProductPage } from "./parse.js";
 import { runTryOn } from "./tryon.js";
+import { visionConfigured, visionModel } from "./vision.js";
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -17,6 +21,8 @@ app.get("/api/health", (_req, res) => {
     tryonConfigured: !!process.env.IMAGE_API_KEY && !!process.env.IMAGE_MODEL,
     model: process.env.IMAGE_MODEL || "",
     baseUrl: process.env.IMAGE_BASE_URL || "https://api.openai.com/v1",
+    visionConfigured,
+    visionModel,
   });
 });
 
@@ -64,6 +70,13 @@ app.listen(PORT, () => {
       process.env.IMAGE_API_KEY && process.env.IMAGE_MODEL
         ? "已配置 (" + (process.env.IMAGE_MODEL || "") + " @ " + (process.env.IMAGE_BASE_URL || "https://api.openai.com/v1") + ")"
         : "未配置（前端将回退 Canvas 预览）"
+    }`,
+  );
+  console.log(
+    `[tryon-backend] 商品图视觉识别: ${
+      visionConfigured
+        ? "已配置 (" + visionModel + "，用于自动补全标题/价格/服装)"
+        : "未配置（解析拿不全时回退手动选择）"
     }`,
   );
 });
