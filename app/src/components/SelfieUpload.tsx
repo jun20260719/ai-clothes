@@ -3,6 +3,7 @@ import { Upload, ImageIcon, Camera, X, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SAMPLE_SELFIE } from "@/lib/sampleData";
+import { compressDataUrl, imgElToCompressedDataUrl } from "@/lib/image";
 import { toast } from "sonner";
 
 function loadImageEl(src: string): Promise<HTMLImageElement> {
@@ -61,22 +62,26 @@ export function SelfieUpload({
     }
     setBusy(true);
     try {
-      let dataUrl: string;
+      let rawUrl: string;
       if (isHeic(file)) {
         toast.loading("正在转换 HEIC 图片为 JPEG…");
-        dataUrl = await convertHeicToDataUrl(file);
+        rawUrl = await convertHeicToDataUrl(file);
         toast.success("HEIC 已成功转换");
       } else {
-        dataUrl = await new Promise<string>((resolve, reject) => {
+        rawUrl = await new Promise<string>((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(r.result as string);
           r.onerror = reject;
           r.readAsDataURL(file);
         });
       }
-      const img = await loadImageEl(dataUrl);
-      onCaptured(dataUrl, img);
-    } catch {
+      // 关键：手机原图可能 3000x4000+ / 几 MB，必须立即压缩为 ≤1280 长边 JPEG，
+      // 否则状态里存的大 dataURL 会拖慢渲染、且后续 toDataURL 会触发 iOS canvas 限制。
+      const compressed = await compressDataUrl(rawUrl, 1280, 0.85);
+      const img = await loadImageEl(compressed);
+      onCaptured(compressed, img);
+    } catch (e) {
+      console.error("[SelfieUpload] 图片处理失败:", e);
       toast.error("图片处理失败：HEIC 转换需浏览器支持（推荐用 Chrome/Edge）");
     } finally {
       setBusy(false);
@@ -109,11 +114,13 @@ export function SelfieUpload({
   function capture() {
     const v = videoRef.current;
     if (!v) return;
+    // 拍照得到的 video 帧可能是高分辨率的，直接 toDataURL("image/png") 体积大，
+    // 用统一的压缩工具输出 JPEG（长边 ≤1280，quality 0.85）。
     const c = document.createElement("canvas");
     c.width = v.videoWidth;
     c.height = v.videoHeight;
     c.getContext("2d")!.drawImage(v, 0, 0);
-    const dataUrl = c.toDataURL("image/png");
+    const dataUrl = imgElToCompressedDataUrl(c, 1280, 0.85);
     loadImageEl(dataUrl).then((img) => onCaptured(dataUrl, img));
     stopCamera();
   }

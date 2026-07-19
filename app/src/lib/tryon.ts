@@ -1,6 +1,7 @@
 import type { BodyMeasurements, Garment, TryOnResult } from "@/types";
 import { garmentDataUrl } from "./garments";
 import { tryOnViaApi } from "./api";
+import { imgElToCompressedDataUrl } from "./image";
 
 export interface TryOnOptions {
   selfie: HTMLImageElement | HTMLCanvasElement;
@@ -135,13 +136,12 @@ export async function tryOn(opts: TryOnOptions): Promise<TryOnResult> {
   };
 }
 
-/** 图像 → PNG dataURL */
+/** 图像 → 压缩 JPEG dataURL（长边 1280，quality 0.85）
+ * 关键：手机拍照原图可能 3000x4000+，直接 toDataURL("image/png") 会
+ *   ① iOS Safari canvas 像素超限抛异常  ② PNG 无损体积 20MB+ 超请求体上限
+ * 必须在发请求前压缩，否则前端直接抛错、请求根本发不出去（后台无日志）。 */
 function imgToDataUrl(img: HTMLImageElement | HTMLCanvasElement): string {
-  const c = document.createElement("canvas");
-  c.width = (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
-  c.height = (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
-  c.getContext("2d")!.drawImage(img, 0, 0);
-  return c.toDataURL("image/png");
+  return imgElToCompressedDataUrl(img, 1280, 0.85);
 }
 
 /**
@@ -160,10 +160,14 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
     productImage: productImageUrl || undefined,
   };
 
-  // 首次调用失败时自动重试一次真实接口（应对后端冷启动 / 首次网络抖动 /
-  // 商品图首拉失败），两次都失败才回退本地 Canvas 预览，
+  // 首次调用失败时自动重试，多次都失败才回退本地 Canvas 预览，
   // 避免「上传后第一次点击总是拿到 mock 衣服，再点一次才真实」。
-  const MAX_ATTEMPTS = 2;
+  // 重试策略（针对手机网络优化）：
+  //   - 次数 3 次（覆盖冷启动 + 首次拉商品图超时 + 视觉模型偶发失败）
+  //   - 间隔递增 1.5s / 3s，给后端恢复时间（600ms 太短，后端还在处理上一请求）
+  //   - NO_TOKEN/NO_MODEL 直接放弃（配置问题，重试无意义）
+  const MAX_ATTEMPTS = 3;
+  const BACKOFFS = [1500, 3000];
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const { image } = await tryOnViaApi(payload);
@@ -180,9 +184,10 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
       // 后端明确未配置模型/密钥：无需重试，直接回退本地预览
       const code = (e as Error & { code?: string })?.code;
       if (code === "NO_TOKEN" || code === "NO_MODEL") break;
-      // 非最后一次尝试：短暂退避后重试真实接口
+      console.warn(`[generateTryOn] 第${attempt + 1}次失败:`, e instanceof Error ? e.message : e);
+      // 非最后一次尝试：递增退避后重试真实接口
       if (attempt < MAX_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, BACKOFFS[attempt] ?? 3000));
       }
     }
   }

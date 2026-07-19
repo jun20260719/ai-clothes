@@ -33,11 +33,28 @@ export interface TryOnApiPayload {
 export async function tryOnViaApi(
   payload: TryOnApiPayload,
 ): Promise<{ image: string }> {
-  const resp = await fetch(`${API_BASE}/tryon`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  // 超时控制：后端链路较长（拉商品图 + 视觉提取 + 图像生成），手机网络下可能 60-90s。
+  // 不设超时的话，移动浏览器/中间网关会在自己的超时阈值悄悄掐断连接 →
+  // fetch reject 一个无意义的网络错误，前端误以为"接口没发出去"。
+  // 120s 足够覆盖正常生成耗时，超时则明确报错便于重试。
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/tryon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("试衣请求超时（120s），请重试");
+    }
+    throw new Error(`网络错误：${e instanceof Error ? e.message : String(e)}`);
+  }
+  clearTimeout(timer);
   const data = await resp.json();
   if (!resp.ok || !data.ok) {
     const e = new Error(data.error || `试衣失败 (${resp.status})`);

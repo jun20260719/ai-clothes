@@ -61,7 +61,7 @@ const UA =
  * @param {string} src 图片 URL（或已是 dataURL 时直接复用）
  * @param {{retries?:number, timeoutMs?:number}} [opts]
  */
-export async function resolveToDataUrl(src, { retries = 2, timeoutMs = 10000 } = {}) {
+export async function resolveToDataUrl(src, { retries = 3, timeoutMs = 15000 } = {}) {
   if (!src) return null;
   if (src.startsWith("data:")) return src; // 已是 dataURL，直接复用
 
@@ -91,14 +91,47 @@ export async function resolveToDataUrl(src, { retries = 2, timeoutMs = 10000 } =
       const ab = await r.arrayBuffer();
       if (!ab || ab.byteLength === 0) throw new Error("空响应");
       const ct = (r.headers.get("content-type") || "image/jpeg").split(";")[0];
-      return `data:${ct};base64,${Buffer.from(ab).toString("base64")}`;
-    } catch {
+      const dataUrl = `data:${ct};base64,${Buffer.from(ab).toString("base64")}`;
+      // 缓存：同一外链下次直接命中，避免 /api/tryon 再次冷拉（手机网络下首次拉取常超时）
+      cacheImage(src, dataUrl);
+      return dataUrl;
+    } catch (e) {
       clearTimeout(timer);
+      console.log(`[resolveToDataUrl] 第${attempt + 1}/${retries + 1}次拉取失败: ${e.message} | ${src.slice(0, 80)}`);
       if (attempt === retries) return null; // 重试用尽，放弃商品图，回退「按描述添加服装」模式
-      await new Promise((res) => setTimeout(res, 300 * (attempt + 1))); // 退避后重试
+      await new Promise((res) => setTimeout(res, 400 * (attempt + 1))); // 退避后重试
     }
   }
   return null;
+}
+
+/**
+ * 商品图内存缓存：URL → dataURL。
+ * /api/parse 预取成功后缓存，/api/tryon 时直接命中，避免手机网络下重复冷拉超时。
+ * 进程级缓存，重启失效（够用：单次会话内同一商品图只需拉一次）。
+ */
+const IMAGE_CACHE = new Map();
+/** 缓存上限，避免内存无限增长 */
+const IMAGE_CACHE_MAX = 40;
+function cacheImage(key, dataUrl) {
+  if (!key || !dataUrl) return;
+  if (IMAGE_CACHE.size >= IMAGE_CACHE_MAX) {
+    // 淘汰最早的条目
+    const firstKey = IMAGE_CACHE.keys().next().value;
+    IMAGE_CACHE.delete(firstKey);
+  }
+  IMAGE_CACHE.set(key, dataUrl);
+}
+/** 先查缓存，缓存未命中再走 resolveToDataUrl */
+async function resolveToDataUrlCached(src) {
+  if (!src) return null;
+  if (src.startsWith("data:")) return src;
+  const hit = IMAGE_CACHE.get(src);
+  if (hit) {
+    console.log(`[resolveToDataUrl] 缓存命中 ✓ | ${src.slice(0, 60)}`);
+    return hit;
+  }
+  return resolveToDataUrl(src);
 }
 
 /**
@@ -321,11 +354,24 @@ async function callImageApi({ selfie, productImage, prompt }) {
 
   console.log(`[tryon] 调用模型=${model} size=${size} 图数量=${images.length} 有商品图=${!!productImage}`);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  // 超时控制：AI 图像生成通常 10-40s，给 90s 上限避免无限挂起
+  // （手机网络下若无限挂起，前端 fetch 会被浏览器/移动网络中间节点掐断 → 静默失败）
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 90000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === "AbortError") throw new Error("图像接口超时（90s），请重试");
+    throw new Error(`图像接口网络错误: ${e.message}`);
+  }
+  clearTimeout(timer);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`图像接口调用失败 (${res.status}): ${text.slice(0, 400)}`);
@@ -449,8 +495,14 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
     e.code = "NO_MODEL";
     throw e;
   }
-  // 商品主图：跨域 URL 在服务端转 base64；转换失败则回退模式 B
-  const productB64 = productImage ? await resolveToDataUrl(productImage) : null;
+  const t0 = Date.now();
+  const log = (label) => console.log(`[tryon] ⏱ ${label} +${Date.now() - t0}ms`);
+
+  // 商品主图：跨域 URL 在服务端转 base64（带缓存，避免手机网络下重复冷拉超时）
+  // 缓存命中场景：/api/parse 预取虽失败但本次会话内曾成功拉过同一图
+  log("开始");
+  const productB64 = productImage ? await resolveToDataUrlCached(productImage) : null;
+  log(productB64 ? `商品图已就绪 (${productB64.startsWith("data:") ? "dataURL" : "其他"})` : "商品图拉取失败，走模式 B");
 
   // ★ 关键步骤：用视觉模型提取自拍中人物的可见外貌特征
   // 这段描述嵌入 prompt 后，可大幅降低模型「用商品图模特替换用户」的概率
@@ -459,10 +511,12 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
     extractFaceDescription(selfie),
     productB64 ? extractGarmentDetail(productB64) : Promise.resolve(""),
   ]);
+  log("视觉提取完成");
   if (faceDescription) console.log(`[tryon] 人物外貌特征: ${faceDescription}`);
   if (garmentDetail) console.log(`[tryon] 商品服装细节: ${garmentDetail}`);
 
   const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, faceDescription, garmentDetail });
   const image = await callImageApi({ selfie, productImage: productB64, prompt });
+  log("图像生成完成");
   return { image };
 }

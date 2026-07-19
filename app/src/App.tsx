@@ -127,8 +127,10 @@ export default function App() {
       });
       setResult(res);
       toast.success("试衣图已生成");
-    } catch {
-      toast.error("试衣生成失败，请重试");
+    } catch (e) {
+      console.error("[generate] 试衣生成失败:", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`试衣生成失败：${msg}`);
     } finally {
       setGenerating(false);
     }
