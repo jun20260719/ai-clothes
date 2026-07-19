@@ -104,11 +104,10 @@ export async function resolveToDataUrl(src, { retries = 2, timeoutMs = 10000 } =
 /**
  * 根据服装信息与身体数据，构造给图像模型的 prompt。
  *
- * 核心设计原则（经多次迭代验证）：
- *   ① 角色必须是「编辑器」而非「创作者」——告诉模型这是 EDIT 不是 GENERATE
- *   ② 必须用最简短的语言突出「唯一操作=换衣服」
- *   ③ 人物外貌描述越具体越好（避免模型用商品图模特替换）
- *   ④ 两张图模式时，第二张图的权重需要被压低
+ * 迭代经验：
+ *   v1 "摄影师生成" → 人物被替换成模特
+ *   v2 "EDIT + 身份锁定" → 人物保住了，但服装变纯色（描述太弱）
+ *   v3 平衡：身份锁定 + 商品服装详细视觉描述 + EDIT 操作
  */
 function buildPrompt(garment = {}, m = {}, opts = {}) {
   const color = COLOR_CN[garment.color] || garment.color || "未指定颜色";
@@ -124,42 +123,58 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   if (m.waist) fit.push(`腰围约 ${m.waist}cm`);
   if (m.hips) fit.push(`臀围约 ${m.hips}cm`);
   if (m.shoulder) fit.push(`肩宽约 ${m.shoulder}cm`);
-  const fitText = fit.length ? `（人物体型：${fit.join("，")}，据此调整服装合身度）` : "";
+    const fitText = fit.length ? `\n体型参考：${fit.join("，")}，据此调整服装合身度和褶皱分布。` : "";
 
-  // 外貌锁定文本（由 runTryOn 在调用前通过视觉模型自动生成）
   const faceLock = opts.faceDescription || "";
+  const garmentDetail = opts.garmentDetail || "";
 
-  // ── 模式 A：有商品主图 → 图像编辑操作（EDIT，不是 GENERATE）──
+  // ── 模式 A：有商品主图 ──
   if (opts.productImage) {
     return [
-      `IMAGE EDIT OPERATION — 只执行一个操作：把图中人物的当前衣服换成一件${color}${type}（覆盖${region}）。`,
+      `【任务】IMAGE EDIT — 只做一件事：把图中人物的当前衣服替换为下方的「目标服装」。`,
       "",
-      `绝对不可改变的内容（违反即失败）：`,
-      `- 人物的脸、发型、体型、姿势、手势、表情 — 100% 保持原图，像素级不变`,
-      `- 背景环境、光线方向、构图 — 完全不变`,
-      faceLock ? `- 人物外貌特征：${faceLock}` : "",
+      `【身份锁定 — 不可违反】`,
+      `- 人物的脸、五官、发型、肤色、表情、体型 — 必须与原图完全一致，像素级保留`,
+      `- 手臂位置、手势、站姿 — 与原图一致`,
+      `- 背景环境、门、光线方向、构图比例 — 完全不变`,
+      faceLock ? `- 人物具体外貌：${faceLock}` : "",
       "",
-      `服装要求：款式=${type}，颜色=${color}${fitText}。衣服必须贴合此人的真实身材，呈现自然的褶皱和垂坠。边缘与皮肤无缝融合。`,
+      `【目标服装 — 必须严格还原以下细节】`,
+      garmentDetail
+        ? `${garmentDetail}`
+        : `- 类型：${type}\n- 主色调：${color}`,
+      fitText,
       "",
-      `注意：如果第二张输入图包含模特，请完全忽略模特的外貌，仅从该图提取服装的款式、颜色和面料信息。`,
+      `【质量要求】`,
+      `- 服装贴合此人的真实身材（不是把人改成适合衣服）\n- 自然褶皱、垂坠感、布料光影\n- 边缘与皮肤无缝融合，无白边、无拼接痕迹\n- 照片级真实质感`,
+      "",
+      `【重要】第二张输入图是服装参考图。请从中复制服装的全部视觉特征（款式、颜色、图案、面料、细节），但完全忽略图中模特的脸、发型、身材。最终输出的人物必须是第一张图中的同一个人，只是穿了第二张图的这件衣服。`,
     ].filter(Boolean).join("\n");
   }
 
-  // ── 模式 B：无商品主图 → 纯文字描述换衣（单图编辑）──
+  // ── 模式 B：无商品主图 ──
   return [
-    `IMAGE EDIT OPERATION — 只执行一个操作：把图中人物的当前衣服换成一件${color}${type}（覆盖${region}）。`,
+    `【任务】IMAGE EDIT — 只做一件事：把图中人物的当前衣服替换为目标服装。`,
     "",
-    `绝对不可改变的内容：人物的脸、发型、体型、姿势、手势、表情、背景 — 100%保持原图不变。`,
-    faceLock ? `\n人物外貌特征：${faceLock}` : "",
+    `【身份锁定】人物的脸、发型、体型、姿势、背景 — 100%保持原图不变。`,
+    faceLock ? `\n人物外貌：${faceLock}` : "",
     "",
-    `服装要求：款式=${type}，颜色=${color}${fitText}。贴合此人真实身材，自然褶皱，边缘无缝融合。`,
+    `【目标服装】类型=${type}，主色=${color}${fitText}`,
+    "",
+    `【质量要求】贴合真实身材，自然褶皱，边缘无缝融合，照片级真实。`,
   ].filter(Boolean).join("\n");
 }
 
 /**
  * 从 dataURL 中提取图片原始宽高。
+ *
+ * 历史 bug 教训：PNG 签名是 89 50 4E 47（即 \x89 'P' 'N' 'G'），
+ * 'N'=0x4e、'G'=0x47 容易写反。曾经把 buf[2]/buf[3] 的判断值颠倒，
+ * 导致所有 PNG 都识别失败 → pickBestSize fallback 到 1024x1024。
+ * 现用字符常量避免再次混淆。
+ *
  * @param {string} dataUrl 图片 dataURL（data:image/...;base64,...）
- * @returns {{width:number, height:number}|null}
+ * @returns {{width:number, height:number, format:string}|null}
  */
 function getImageDimensions(dataUrl) {
   try {
@@ -167,35 +182,49 @@ function getImageDimensions(dataUrl) {
     const base64 = dataUrl.split(",")[1];
     if (!base64) return null;
     const buf = Buffer.from(base64, "base64");
-    // PNG: 宽高在第 16-23 字节（大端 32 位整数）
-    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x47 && buf[3] === 0x4e) {
+    if (buf.length < 24) return null;
+
+    // PNG: 签名 89 50 4E 47 0D 0A 1A 0A；宽高在 IHDR chunk 的第 16-23 字节（大端 32 位）
+    // 用 'P' 'N' 'G' 字符常量，避免 0x47/0x4e 写反
+    if (
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 && // 'P'
+      buf[2] === 0x4e && // 'N'
+      buf[3] === 0x47 && // 'G'
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+    ) {
       return {
         width: buf.readUInt32BE(16),
         height: buf.readUInt32BE(20),
+        format: "png",
       };
     }
     // JPEG: 从 SOF 标记读取（FF C0 / FF C2）
     // SOF 段结构：FF + marker(1B) + 长度(2B) + 精度(1B) + 高度(2B) + 宽度(2B)
     if (buf[0] === 0xff && buf[1] === 0xd8) {
       let offset = 2;
-      while (offset < buf.length) {
+      while (offset + 9 < buf.length) {
         if (buf[offset] !== 0xff) break;
         const marker = buf[offset + 1];
-        // RST 标记跳过
+        // RST 标记无段长，跳过
         if (marker >= 0xd0 && marker <= 0xd7) { offset += 2; continue; }
+        // SOI/EOI 也无段长
+        if (marker === 0xd8 || marker === 0xd9) break;
         // SOF0 (C0) / SOF2 (C2) 包含宽高
         if (marker === 0xc0 || marker === 0xc2) {
           return {
             width: buf.readUInt16BE(offset + 7),  // 宽度在 offset+7
             height: buf.readUInt16BE(offset + 5), // 高度在 offset+5
+            format: "jpeg",
           };
         }
         // 其他标记：读段长并跳过
         const segLen = buf.readUInt16BE(offset + 2);
+        if (segLen < 2) break; // 异常段长，避免死循环
         offset += 2 + segLen;
       }
     }
-    // WebP / GIF / 其他格式：返回 null，走默认方形
+    // WebP / GIF / SVG / 其他格式：返回 null，走默认方形
     return null;
   } catch {
     return null;
@@ -218,18 +247,28 @@ function getImageDimensions(dataUrl) {
 const MAX_EDGE = 2048;
 function pickBestSize(selfieDataUrl) {
   // 手动覆盖（可选）：在 .env 设 IMAGE_SIZE 可强制指定输出尺寸
-  if (process.env.IMAGE_SIZE) return process.env.IMAGE_SIZE;
+  if (process.env.IMAGE_SIZE) {
+    console.log(`[tryon] pickBestSize: IMAGE_SIZE 覆盖 = ${process.env.IMAGE_SIZE}`);
+    return process.env.IMAGE_SIZE;
+  }
 
   const dim = getImageDimensions(selfieDataUrl);
-  // 解析失败则回退到通用方形
-  if (!dim || !dim.width || !dim.height) return "1024x1024";
+  if (!dim || !dim.width || !dim.height) {
+    // 解析失败（SVG / WebP / GIF / 异常格式）→ 回退通用方形
+    // 注意：此处会打印 dataURL 前缀，便于排查格式问题
+    const prefix = (selfieDataUrl || "").slice(0, 40);
+    console.log(`[tryon] pickBestSize: 尺寸解析失败，回退 1024x1024 | dataURL前缀=${prefix}`);
+    return "1024x1024";
+  }
 
   let { width, height } = dim;
+  console.log(`[tryon] pickBestSize: 原图=${width}x${height} (${dim.format})`);
   const longest = Math.max(width, height);
   if (longest > MAX_EDGE) {
     const k = MAX_EDGE / longest;
     width = Math.round(width * k);
     height = Math.round(height * k);
+    console.log(`[tryon] pickBestSize: 长边>${MAX_EDGE}，等比缩放至 ${width}x${height}`);
   }
   return `${width}x${height}`;
 }
@@ -241,7 +280,7 @@ async function callImageApi({ selfie, productImage, prompt }) {
   const url = `${base}${endpoint}`;
   const model = process.env.IMAGE_MODEL || "agnes-image-2.0-flash";
   const size = pickBestSize(selfie);  // ← 根据自拍实际比例自动选择
-  console.log(`[tryon] 原图尺寸检测: 输出size=${size}`);
+  console.log(`[tryon] callImageApi: 最终输出 size=${size}`);
   const useInputImage = (process.env.IMAGE_INPUT_IMAGE ?? "true").toLowerCase() !== "false";
 
   // 负面提示词（保留以兼容支持该参数的模型如 agnes；OpenAI 官方不推荐负面提示，
@@ -352,6 +391,48 @@ async function extractFaceDescription(selfieDataUrl) {
 }
 
 /**
+ * 用视觉模型提取商品图中服装的精确视觉细节。
+ * 返回一段具体描述（如"浅绿色底、白色花朵和绿叶印花图案、短袖圆领上衣+长裤套装、棉麻质感"），
+ * 嵌入 prompt 后可让模型精准还原商品服装而非瞎编纯色。
+ *
+ * @param {string} productDataUrl 商品图的 dataURL
+ * @returns {Promise<string>} 服装细节描述，失败返回空字符串
+ */
+async function extractGarmentDetail(productDataUrl) {
+  try {
+    const visionBase = (process.env.VISION_BASE_URL || process.env.IMAGE_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, "");
+    const visionKey = process.env.VISION_API_KEY || process.env.IMAGE_API_KEY;
+    const visionModel = process.env.VISION_MODEL || "agnes-2.0-flash";
+    if (!visionKey) return "";
+
+    const res = await fetch(`${visionBase}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${visionKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "请仔细观察这张图片中的服装（忽略模特），用简洁中文描述这件衣服的视觉细节。必须包含：①主色调和图案（印花/条纹/纯色等）②款式类别（连衣裙/T恤/裤子/套装/外套等）③版型特征（领型、袖长、长短、宽松/修身）④面料质感观感（棉质/丝绸/牛仔/针织等）⑤任何可见的装饰细节（扣子、刺绣、蕾丝等）。输出格式：分条列出，每条一句话，总共不超过100字。" },
+            { type: "image_url", image_url: { url: productDataUrl } },
+          ],
+        }],
+        max_tokens: 300,
+      }),
+    });
+    if (!res.ok) return "";
+    const json = await res.json();
+    const content = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || "";
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 200);
+    return cleaned || "";
+  } catch (e) {
+    console.log("[tryon] 商品服装细节提取跳过:", e.message);
+    return "";
+  }
+}
+
+/**
  * 运行 AI 试衣
  * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string}} params
  *   productImage 为商品主图（URL 或 dataURL）。提供时走「真试衣」：以自拍为底，把商品服装穿到用户身上。
@@ -373,10 +454,15 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
 
   // ★ 关键步骤：用视觉模型提取自拍中人物的可见外貌特征
   // 这段描述嵌入 prompt 后，可大幅降低模型「用商品图模特替换用户」的概率
-  const faceDescription = await extractFaceDescription(selfie);
+  // 并行提取：人物外貌 + 商品服装细节
+  const [faceDescription, garmentDetail] = await Promise.all([
+    extractFaceDescription(selfie),
+    productB64 ? extractGarmentDetail(productB64) : Promise.resolve(""),
+  ]);
   if (faceDescription) console.log(`[tryon] 人物外貌特征: ${faceDescription}`);
+  if (garmentDetail) console.log(`[tryon] 商品服装细节: ${garmentDetail}`);
 
-  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, faceDescription });
+  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, faceDescription, garmentDetail });
   const image = await callImageApi({ selfie, productImage: productB64, prompt });
   return { image };
 }
