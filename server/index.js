@@ -1,7 +1,9 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), ".env") });
+import { existsSync } from "fs";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, ".env") });
 import express from "express";
 import cors from "cors";
 import { parseProductPage } from "./parse.js";
@@ -86,6 +88,23 @@ app.post("/api/estimate-body", async (req, res) => {
     res.status(502).json({ ok: false, error: e.message || "识别失败" });
   }
 });
+
+// ④ 托管前端构建产物（app 的 `npm run build` 已输出到 server/public）
+// 必须放在所有 /api 路由「之后」：静态资源与 SPA fallback 才不会拦截 API 请求
+const PUBLIC_DIR = join(__dirname, "public");
+if (existsSync(PUBLIC_DIR)) {
+  app.use(express.static(PUBLIC_DIR));
+  // SPA fallback：处理前端路由（如 /product/123）的直接访问与刷新，
+  // 由前端 Router 接管；非静态文件且非 /api 的请求统一返回 index.html
+  app.get("*", (_req, res) => {
+    res.sendFile(join(PUBLIC_DIR, "index.html"));
+  });
+  console.log(`[tryon-backend] 前端静态托管已启用：server/public`);
+} else {
+  console.log(
+    "[tryon-backend] 未检测到 server/public，前端未托管。请先运行：cd app && npm run build",
+  );
+}
 
 app.listen(PORT, () => {
   console.log(`[tryon-backend] 监听 http://localhost:${PORT}`);

@@ -1,2 +1,4 @@
 node_modules
 .env
+# 前端构建产物（由 app 的 `npm run build` 生成，输出到 server/public）
+public
