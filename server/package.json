@@ -1,0 +1,17 @@
+{
+  "name": "tryon-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 试衣魔镜后端：商品链接解析 + AI 试衣接口",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
