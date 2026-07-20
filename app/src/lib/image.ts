@@ -72,3 +72,59 @@ export async function compressDataUrl(
   const img = await loadImageEl(dataUrl);
   return imgElToCompressedDataUrl(img, maxEdge, quality);
 }
+
+/**
+ * 常见图片扩展名（含部分浏览器 file.type 为空 / 非 image/* 的情况，按扩展名兜底识别）。
+ * 典型场景：从淘宝 / 微信下载的 .webp 商品图，file.type 经常是空或 application/octet-stream，
+ * 仅靠 file.type.startsWith("image/") 会误判为「非图片」从而被拒绝。
+ */
+const IMAGE_EXT = new Set([
+  ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif",
+]);
+
+/** 扩展名 → MIME（file.type 异常时按扩展名修正，确保生成的 dataURL 可被 <img> 正常解码） */
+const EXT_MIME: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  heic: "image/heic",
+  heif: "image/heif",
+};
+
+/**
+ * 判断一个文件是否为可处理的图片：
+ * 优先按 file.type（image/*）判断，缺失或非标准时按扩展名兜底。
+ */
+export function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const name = (file.name || "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  return IMAGE_EXT.has(name.slice(dot));
+}
+
+/**
+ * 读取图片文件为 dataURL，并按扩展名修正 MIME。
+ * 解决「下载的 .webp 文件 MIME 异常 → dataURL 前缀错误 → <img>/canvas 无法解码」的问题。
+ * 例如淘宝 / 微信保存的 webp，会被修正为 data:image/webp;base64,... 以正确解码。
+ */
+export function readImageFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error("图片读取失败"));
+    r.onload = () => {
+      const raw = r.result as string;
+      const comma = raw.indexOf(",");
+      const base64 = comma >= 0 ? raw.slice(comma + 1) : raw;
+      const name = (file.name || "").toLowerCase();
+      const dot = name.lastIndexOf(".");
+      const ext = dot >= 0 ? name.slice(dot + 1) : "";
+      const mime = EXT_MIME[ext] || file.type || "application/octet-stream";
+      resolve(`data:${mime};base64,${base64}`);
+    };
+    r.readAsDataURL(file);
+  });
+}

@@ -1,5 +1,4 @@
-import type { Garment, GarmentType, ParsedProduct, Platform } from "@/types";
-import { REGION_MAP, COLOR_PALETTE } from "./garments";
+import type { Garment, ParsedProduct, Platform } from "@/types";
 import { parseViaApi, recognizeProductImageApi } from "./api";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -60,51 +59,13 @@ const CLOTHING_KEYWORDS = [
   "jacket", "coat", "sweater", "pants",
 ];
 
-/** 类型识别关键词 → GarmentType */
-const TYPE_RULES: { type: GarmentType; words: string[] }[] = [
-  { type: "tshirt", words: ["T恤", "短袖", "tee", "t-shirt"] },
-  { type: "shirt", words: ["衬衫", "shirt"] },
-  { type: "hoodie", words: ["卫衣", "连帽", "hoodie"] },
-  { type: "sweater", words: ["毛衣", "针织", "sweater"] },
-  { type: "jacket", words: ["夹克", "外套", "jacket"] },
-  { type: "coat", words: ["大衣", "风衣", "西装", "coat"] },
-  { type: "dress", words: ["连衣裙", "dress"] },
-  { type: "skirt", words: ["半身裙", "短裙", "长裙", "裙"] },
-  { type: "pants", words: ["裤子", "牛仔裤", "休闲裤", "西裤", "pants"] },
-  { type: "shorts", words: ["短裤", "shorts"] },
-  { type: "tanktop", words: ["背心", "吊带", "无袖"] },
-];
-
-/** 颜色识别关键词 → HEX */
-const COLOR_RULES: { word: string; hex: string }[] = [
-  { word: "黑", hex: "#1f2937" },
-  { word: "白", hex: "#f3f4f6" },
-  { word: "红", hex: "#ef4444" },
-  { word: "蓝", hex: "#2563eb" },
-  { word: "天蓝", hex: "#0ea5e9" },
-  { word: "绿", hex: "#10b981" },
-  { word: "粉", hex: "#ec4899" },
-  { word: "紫", hex: "#7c3aed" },
-  { word: "灰", hex: "#64748b" },
-  { word: "黄", hex: "#f59e0b" },
-  { word: "棕", hex: "#a16207" },
-  { word: "橙", hex: "#f97316" },
-];
-
-function detectType(title: string): GarmentType {
-  for (const r of TYPE_RULES) {
-    if (r.words.some((w) => title.toLowerCase().includes(w.toLowerCase()))) {
-      return r.type;
-    }
-  }
-  return "other";
-}
-
-function detectColor(title: string): { color: string; accent: string } {
-  for (const r of COLOR_RULES) {
-    if (title.includes(r.word)) return { color: r.hex, accent: r.hex };
-  }
-  return { color: "#7c3aed", accent: "#7c3aed" };
+/** 从标题关键词推断试衣覆盖区域（不再经过服装类型中间量） */
+function detectRegion(title: string): "upper" | "lower" | "full" {
+  const s = (title || "").toLowerCase();
+  if (/连衣裙|套装|连体|长裙|dress|suit|jumpsuit/.test(s)) return "full";
+  if (/半身裙|短裙|裙|裤子|牛仔裤|休闲裤|西裤|短裤|pants|skirt|jeans|shorts/.test(s)) return "lower";
+  if (/衬衫|卫衣|连帽|毛衣|针织|大衣|风衣|西装|外套|夹克|背心|吊带|无袖|上衣|t恤|短袖|tee|shirt|hoodie|coat|jacket|sweater|polo/.test(s)) return "upper";
+  return "upper";
 }
 
 const SAMPLE_TITLES = [
@@ -158,24 +119,17 @@ export async function parseLink(url: string): Promise<ParsedProduct> {
 
   if (isClothing) {
     // 单件为主，偶尔同时识别上下装（如套装）
-    const type = detectType(title);
-    const { color, accent } = detectColor(title);
+    const region = detectRegion(title);
     garments.push({
       id: `g-${seed.toString(36)}`,
-      type,
       name: title,
-      color: color === "#f3f4f6" ? "#e5e7eb" : color, // 白色略微加灰便于看清
-      accentColor: accent,
-      region: REGION_MAP[type],
+      region,
     });
     // 套装场景：连衣裙/大衣下再补一件内搭
-    if ((type === "coat" || type === "dress") && rand() > 0.5) {
+    if (region === "full" && rand() > 0.5) {
       garments.push({
         id: `g-${seed.toString(36)}-2`,
-        type: "tshirt",
         name: "基础内搭T恤",
-        color: "#f3f4f6",
-        accentColor: "#e5e7eb",
         region: "upper",
       });
     }
@@ -194,8 +148,6 @@ export async function parseLink(url: string): Promise<ParsedProduct> {
   };
 }
 
-export { COLOR_PALETTE };
-
 /**
  * 解析商品链接（智能路由）：优先调用后端真实解析，
  * 任何失败（无后端 / 网络错误 / 解析异常）自动回退到前端 mock，保证流程可用。
@@ -208,8 +160,8 @@ export async function parseProduct(url: string): Promise<ParsedProduct> {
     product = await parseLink(url);
   }
 
-  // 后端已解析为服装，但服装类型未识别（标题无关键词命中 / 视觉兜底未触发）
-  // → 用商品主图再让视觉模型识别一次，自动补全类型与颜色，免去手动选择。
+  // 后端已解析为服装，但服装未识别（标题无关键词命中 / 视觉兜底未触发）
+  // → 用商品主图再让视觉模型识别一次，自动补全服装信息与试衣部位，免去手动选择。
   if (
     product.isClothing &&
     product.garments.length === 0 &&

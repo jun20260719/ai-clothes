@@ -96,8 +96,8 @@ export async function tryOn(opts: TryOnOptions): Promise<TryOnResult> {
   const boxH = bottomY - topY;
   const cx = W / 2;
 
-  // 3) 加载服装图（SVG 无固有尺寸，使用已知 viewBox 比例 200:260）
-  const gImg = await loadImage(garmentDataUrl(garment.type, garment.color));
+  // 3) 加载服装占位图（SVG 无固有尺寸，使用已知 viewBox 比例 200:260）
+  const gImg = await loadImage(garmentDataUrl(garment.region));
   const gAspect = 200 / 260;
 
   // 4) 投影（让服装"贴"在身上而非悬浮）
@@ -155,7 +155,7 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
   const selfieUrl = imgToDataUrl(selfie);
   const payload = {
     selfie: selfieUrl,
-    garment: { type: garment.type, color: garment.color, region: garment.region },
+    garment: { name: garment.name, region: garment.region },
     measurements: measurements as unknown as Record<string, string>,
     productImage: productImageUrl || undefined,
   };

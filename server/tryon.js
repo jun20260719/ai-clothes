@@ -22,16 +22,8 @@
  * 未配置 IMAGE_API_KEY / IMAGE_MODEL 时抛出明确错误，前端回退到本地 Canvas 预览。
  */
 
-const COLOR_CN = {
-  white: "白色", black: "黑色", red: "红色", blue: "蓝色", green: "绿色",
-  yellow: "黄色", pink: "粉色", gray: "灰色", grey: "灰色", purple: "紫色",
-  orange: "橙色", brown: "棕色", navy: "藏青色", beige: "米色",
-};
-const TYPE_CN = {
-  tshirt: "T恤", shirt: "衬衫", dress: "连衣裙", coat: "大衣/外套",
-  jacket: "夹克", hoodie: "卫衣", sweater: "毛衣", pants: "裤子",
-  jeans: "牛仔裤", skirt: "半身裙", shorts: "短裤", suit: "西装",
-};
+// 服装类型/颜色已不再作为 garment 字段；试衣由商品原图直接驱动，
+// 款式/颜色由视觉提取的 garmentDetail 描述，region 决定覆盖部位。
 
 
 /** 把图像接口返回（b64 或 url）统一规范成可直接 <img> 使用的字符串 */
@@ -144,9 +136,8 @@ async function resolveToDataUrlCached(src) {
  *   ⑤ 新图要自然贴合身材，褶皱与光影真实，边缘无缝融合
  */
 function buildPrompt(garment = {}, m = {}, opts = {}) {
-  const color = COLOR_CN[garment.color] || garment.color || "未指定颜色";
-  const type = TYPE_CN[garment.type] || garment.type || "服装";
   const region = garment.region || "full"; // upper / lower / full
+  const name = garment.name || "";
 
   // 身体数据
   const fit = [];
@@ -165,7 +156,7 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   const REGION_GUIDE = {
     upper: { scope: "只提取第二张图中的【上身服装】（颈部/肩膀到腰臀之间），替换第一张人物的上身服装", keep: "下半身服装（裤子/裙子/鞋）必须与原图完全一致，禁止改动。" },
     lower: { scope: "只提取第二张图中的【下身服装】（腰部到脚踝），替换第一张人物的下身服装", keep: "上半身服装（上衣/外套）必须与原图完全一致，禁止改动。" },
-    full:  { scope: "提取第二张图中的整套服装（或连体款式），替换第一张人物的全身服装", keep: "" },
+    full:  { scope: "提取第二张图中的全身服装，替换第一张人物的全身服装", keep: "" },
   };
   const guide = REGION_GUIDE[region] || REGION_GUIDE.full;
 
@@ -179,14 +170,14 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
       ``,
       `身份锁定：输出的人物必须与第一张图是同一人，脸型 / 五官 / 发型 / 肤色 / 体型 / 姿势 / 背景 100% 保持原样，严禁参考第二张图中模特的任何特征。`,
       guide.keep ? `区域保持：${guide.keep}` : ``,
-      `质量：${garmentDetail ? "目标服装参考：" + garmentDetail + "。" : `目标服装类型：${type}，主色：${color}。`}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
+      `质量：${garmentDetail ? "目标服装参考：" + garmentDetail + "。" : (name ? `目标服装：${name}。` : "")}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
     ].filter(Boolean).join("\n");
   }
 
   // ── 单图兜底：无商品图，仅文字标签 ──
   return [
     `你将修改这张用户照片：把人物服装替换为目标服装，其余（脸、发型、体型、姿势、背景）100% 保持原样。`,
-    `目标服装：类型：${type}，主色：${color}。${fitText}只替换服装，自然贴合身材，褶皱与光影真实，边缘无缝融合。`,
+    `目标服装：${name || "服装"}。${fitText}只替换服装，自然贴合身材，褶皱与光影真实，边缘无缝融合。`,
   ].join("\n");
 }
 
@@ -455,6 +446,7 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
   if (garmentDetail) console.log(`[tryon] 商品服装细节 [${region}]: ${garmentDetail}`);
 
   const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, garmentDetail });
+  console.log(`[tryon] 生成图像 prompt: ${prompt}`);
   const image = await callImageApi({ selfie, productImage: productB64, prompt, region });
   log("图像生成完成");
   return { image };

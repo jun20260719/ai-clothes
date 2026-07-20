@@ -3,7 +3,7 @@ import { Upload, ImageIcon, Camera, X, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SAMPLE_SELFIE } from "@/lib/sampleData";
-import { compressDataUrl, imgElToCompressedDataUrl } from "@/lib/image";
+import { compressDataUrl, imgElToCompressedDataUrl, isImageFile, readImageFileAsDataUrl } from "@/lib/image";
 import { toast } from "sonner";
 
 function loadImageEl(src: string): Promise<HTMLImageElement> {
@@ -56,7 +56,7 @@ export function SelfieUpload({
   const streamRef = useRef<MediaStream | null>(null);
 
   async function handleFile(file: File) {
-    if (!file.type.startsWith("image/") && !isHeic(file)) {
+    if (!isImageFile(file) && !isHeic(file)) {
       toast.error("请选择图片文件");
       return;
     }
@@ -68,12 +68,8 @@ export function SelfieUpload({
         rawUrl = await convertHeicToDataUrl(file);
         toast.success("HEIC 已成功转换");
       } else {
-        rawUrl = await new Promise<string>((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result as string);
-          r.onerror = reject;
-          r.readAsDataURL(file);
-        });
+        // 按扩展名修正 MIME，确保 webp 等文件能被 <img> 正确解码
+        rawUrl = await readImageFileAsDataUrl(file);
       }
       // 关键：手机原图可能 3000x4000+ / 几 MB，必须立即压缩为 ≤1280 长边 JPEG，
       // 否则状态里存的大 dataURL 会拖慢渲染、且后续 toDataURL 会触发 iOS canvas 限制。
@@ -188,7 +184,7 @@ export function SelfieUpload({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -196,7 +192,7 @@ export function SelfieUpload({
           }}
         />
         <p className="mt-3 text-xs text-muted-foreground">
-          支持 JPG / PNG / HEIC（iPhone 实拍）等格式，建议使用正面、全身或上半身清晰照片
+          支持 JPG / PNG / WEBP / HEIC（iPhone 实拍）等格式，建议使用正面、全身或上半身清晰照片
         </p>
       </div>
 

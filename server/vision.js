@@ -3,7 +3,7 @@
  * --------------------------------------------------
  * 当 HTML 文本提取拿不全（标题/价格/服装类型缺失）但已有商品主图时，
  * 把商品图发给一个「能读图」的多模态模型，结构化识别出：
- *   { title, price, garmentType, color, region }
+ *   { title, price, region }
  * 并回填到解析结果，免去用户手动选择。
  *
  * 默认复用 Agnes 的 agnes-2.0-flash（与画图模型 agnes-image-2.0-flash 同 Key、同 Base URL，
@@ -24,24 +24,8 @@ const VISION_BASE_URL = (
 const VISION_API_KEY = process.env.VISION_API_KEY || process.env.IMAGE_API_KEY || "";
 const VISION_MODEL = process.env.VISION_MODEL || "agnes-2.0-flash";
 
-/** 允许的服装类型（与前端 GarmentType 对齐） */
-const GARMENT_TYPES = [
-  "tshirt", "shirt", "hoodie", "sweater", "jacket", "coat",
-  "dress", "skirt", "pants", "shorts", "tanktop", "other",
-];
-
-/** 中文颜色词 → HEX（与前端 COLOR_RULES 一致） */
-const COLOR_MAP = {
-  黑: "#1f2937", 白: "#f3f4f6", 红: "#ef4444", 蓝: "#2563eb", 天蓝: "#0ea5e9",
-  绿: "#10b981", 粉: "#ec4899", 紫: "#7c3aed", 灰: "#64748b", 黄: "#f59e0b",
-  棕: "#a16207", 橙: "#f97316",
-};
-
-function nearestColor(word) {
-  if (!word) return "#7c3aed";
-  for (const [k, v] of Object.entries(COLOR_MAP)) if (word.includes(k)) return v;
-  return "#7c3aed";
-}
+/** 允许的试衣覆盖区域 */
+const REGION_VALUES = ["upper", "lower", "full"];
 
 /**
  * 把图片输入转成 OpenAI 兼容的 image_url 内容块。
@@ -90,22 +74,12 @@ function parseVisionJson(text, reasoningContent) {
     const obj = m ? JSON.parse(m[0]) : null;
     if (!obj || typeof obj !== "object") return null;
 
-    const type = GARMENT_TYPES.includes(obj.garmentType) ? obj.garmentType : "other";
-    const colorWord = typeof obj.color === "string" ? obj.color : "";
-    const color = nearestColor(colorWord);
-    const region =
-      obj.region === "upper" || obj.region === "lower" || obj.region === "full"
-        ? obj.region
-        : type === "dress" || type === "coat"
-          ? "full"
-          : type === "skirt" || type === "pants" || type === "shorts"
-            ? "lower"
-            : "upper";
+    const region = REGION_VALUES.includes(obj.region) ? obj.region : "upper";
     const title = typeof obj.title === "string" ? obj.title.trim() : "";
     const priceRaw = obj.price == null || obj.price === "" ? null : Number(obj.price);
     const price = Number.isFinite(priceRaw) ? priceRaw : null;
 
-    return { title, price, garmentType: type, color, colorWord, region };
+    return { title, price, region };
   } catch {
     return null;
   }
@@ -127,10 +101,8 @@ export async function recognizeProductImage(imageInput, { timeoutMs } = {}) {
   const prompt = `你是一个电商商品识别助手。请仔细观察这张商品主图，提取该商品的结构化信息。
 只返回一个 JSON 对象（不要任何解释、不要代码块标记），字段如下：
 {
-  "title": "商品标题，提炼核心款式/材质/颜色，如「纯棉圆领短袖T恤」，无法判断则填空字符串",
+  "title": "商品标题，提炼核心款式/材质，如「纯棉圆领短袖T恤」，无法判断则填空字符串",
   "price": 数值（单位元），无法判断则填 null,
-  "garmentType": "从以下选一：tshirt, shirt, hoodie, sweater, jacket, coat, dress, skirt, pants, shorts, tanktop, other",
-  "color": "服装主色的中文词，如 白/黑/红/蓝/粉，无法判断填空字符串",
   "region": "upper（上装）或 lower（下装）或 full（连衣裙/全身）"
 }`;
 

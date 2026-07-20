@@ -20,8 +20,7 @@ export async function parseViaApi(url: string): Promise<ParsedProduct> {
 export interface TryOnApiPayload {
   selfie: string; // dataURL 自拍照
   garment: {
-    type: string;
-    color: string;
+    name?: string;
     region: "upper" | "lower" | "full";
   };
   measurements: Record<string, string>;
@@ -92,7 +91,7 @@ export async function estimateBodyViaApi(image: string): Promise<BodyEstimate> {
 
 /**
  * 商品图视觉识别：接收商品主图（dataURL 或 URL），后端视觉模型自动识别
- * 服装类型与颜色。识别成功返回 garment，无法识别（图非服装/模型无把握）则 recognized=false。
+ * 服装信息与试衣部位（region）。识别成功返回 garment，无法识别（图非服装/模型无把握）则 recognized=false。
  */
 export async function recognizeProductImageApi(
   image: string,

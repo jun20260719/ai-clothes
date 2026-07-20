@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Download, Sparkles, RotateCcw, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { GARMENT_LABELS } from "@/lib/garments";
+import { REGION_LABELS } from "@/lib/garments";
 import type { TryOnResult } from "@/types";
 import { ImageLightbox } from "@/components/ImageLightbox";
 
@@ -21,7 +21,7 @@ export function TryOnResult({
     const url = result.dataUrl || result.imageUrl || "";
     const a = document.createElement("a");
     a.href = url;
-    a.download = `试衣-${GARMENT_LABELS[result.garment.type]}-${Date.now()}.png`;
+    a.download = `试衣-${result.garment.name || "效果"}-${Date.now()}.png`;
     a.click();
   }
 
@@ -72,7 +72,7 @@ export function TryOnResult({
         <Badge variant="secondary" className="gap-1">
           逼真度 {result.quality}/100
         </Badge>
-        <Badge variant="outline">{GARMENT_LABELS[result.garment.type]}</Badge>
+        <Badge variant="outline">{REGION_LABELS[result.garment.region]}</Badge>
         <Badge variant={result.imageUrl ? "default" : "secondary"}>
           {result.imageUrl ? "AI 试衣" : "本地预览"}
         </Badge>

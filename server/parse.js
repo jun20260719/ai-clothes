@@ -124,62 +124,27 @@ const CLOTHING_KEYWORDS = [
   "无袖","上衣","外套","裙","tee","shirt","dress","hoodie","jacket","coat",
   "sweater","pants",
 ];
-const TYPE_RULES = [
-  { type: "tshirt", words: ["T恤","短袖","tee","t-shirt"] },
-  { type: "shirt", words: ["衬衫","shirt"] },
-  { type: "hoodie", words: ["卫衣","连帽","hoodie"] },
-  { type: "sweater", words: ["毛衣","针织","sweater"] },
-  { type: "jacket", words: ["夹克","外套","jacket"] },
-  { type: "coat", words: ["大衣","风衣","西装","coat"] },
-  { type: "dress", words: ["连衣裙","dress"] },
-  { type: "skirt", words: ["半身裙","短裙","长裙","裙"] },
-  { type: "pants", words: ["裤子","牛仔裤","休闲裤","西裤","pants"] },
-  { type: "shorts", words: ["短裤","shorts"] },
-  { type: "tanktop", words: ["背心","吊带","无袖"] },
-];
-const COLOR_RULES = [
-  { word: "黑", hex: "#1f2937" }, { word: "白", hex: "#f3f4f6" },
-  { word: "红", hex: "#ef4444" }, { word: "蓝", hex: "#2563eb" },
-  { word: "天蓝", hex: "#0ea5e9" }, { word: "绿", hex: "#10b981" },
-  { word: "粉", hex: "#ec4899" }, { word: "紫", hex: "#7c3aed" },
-  { word: "灰", hex: "#64748b" }, { word: "黄", hex: "#f59e0b" },
-  { word: "棕", hex: "#a16207" }, { word: "橙", hex: "#f97316" },
-];
-const REGION_MAP = {
-  tshirt: "upper", shirt: "upper", hoodie: "upper", sweater: "upper",
-  jacket: "upper", coat: "full", dress: "full", skirt: "lower",
-  pants: "lower", shorts: "lower", tanktop: "upper", other: "upper",
-};
-/** 后端服装类型中文名（用于 AI 识别结果的 garment.name） */
-const GARMENT_LABELS = {
-  tshirt: "T恤", shirt: "衬衫", hoodie: "卫衣", sweater: "毛衣", jacket: "夹克",
-  coat: "大衣/外套", dress: "连衣裙", skirt: "半身裙", pants: "裤子",
-  shorts: "短裤", tanktop: "背心/吊带", other: "服装",
-};
+const REGION_VALUES = ["upper", "lower", "full"];
 
-export function makeGarment(type, name, color, region) {
-  const c = color || "#7c3aed";
+/** 从标题关键词推断试衣覆盖区域（不再经过服装类型中间量） */
+function detectRegion(title) {
+  const s = (title || "").toLowerCase();
+  if (/连衣裙|套装|连体|长裙|dress|suit|jumpsuit/.test(s)) return "full";
+  if (/半身裙|短裙|裙|裤子|牛仔裤|休闲裤|西裤|短裤|pants|skirt|jeans|shorts/.test(s)) return "lower";
+  if (/衬衫|卫衣|连帽|毛衣|针织|大衣|风衣|西装|外套|夹克|背心|吊带|无袖|上衣|t恤|短袖|tee|shirt|hoodie|coat|jacket|sweater|polo/.test(s)) return "upper";
+  return "upper";
+}
+
+export function makeGarment(name, region) {
   return {
     id: `g-${Date.now().toString(36)}`,
-    type,
-    name: name || GARMENT_LABELS[type] || "服装",
-    color: c,
-    accentColor: c,
-    region: region || REGION_MAP[type] || "upper",
+    name: name || "服装",
+    region: REGION_VALUES.includes(region) ? region : "upper",
   };
 }
 function isClothingTitle(t) {
   const s = (t || "").toLowerCase();
   return CLOTHING_KEYWORDS.some((k) => s.includes(k.toLowerCase()));
-}
-function detectType(t) {
-  const s = (t || "").toLowerCase();
-  for (const r of TYPE_RULES) if (r.words.some((w) => s.includes(w.toLowerCase()))) return r.type;
-  return "other";
-}
-function detectColor(t) {
-  for (const r of COLOR_RULES) if ((t || "").includes(r.word)) return r.hex;
-  return "#7c3aed";
 }
 
 /* ── 抓取 + 提取 ── */
@@ -563,18 +528,13 @@ async function tryVision(platform, finalUrl, meta) {
     console.log(`[parse] Vision returned null, skipping`);
     return null;
   }
-  console.log(`[parse] Vision result: title="${rec.title}" price=${rec.price} type=${rec.garmentType}`);
+  console.log(`[parse] Vision result: title="${rec.title}" price=${rec.price} region=${rec.region}`);
 
   const garments = [];
-  if (rec.garmentType && rec.garmentType !== "other") {
-    garments.push(
-      makeGarment(rec.garmentType, rec.title || GARMENT_LABELS[rec.garmentType], rec.color, rec.region),
-    );
+  if (rec.region) {
+    garments.push(makeGarment(rec.title || "服装", rec.region));
   } else if (rec.title && isClothingTitle(rec.title)) {
-    const type = detectType(rec.title);
-    garments.push(
-      makeGarment(type, rec.title, rec.color || detectColor(rec.title), REGION_MAP[type] || "upper"),
-    );
+    garments.push(makeGarment(rec.title, detectRegion(rec.title)));
   }
 
   const title =
@@ -786,15 +746,10 @@ export async function parseProductPage(url) {
     // 普通网页：仅按关键词判定是否为服装，无法识别则视为非服装
     isClothing = autoClothing;
     if (isClothing) {
-      const type = detectType(title);
-      const color = detectColor(title);
       garments.push({
         id: `g-${Date.now().toString(36)}`,
-        type,
         name: title,
-        color: color === "#f3f4f6" ? "#e5e7eb" : color,
-        accentColor: color,
-        region: REGION_MAP[type] || "upper",
+        region: detectRegion(title),
       });
     }
   } else {
@@ -802,15 +757,10 @@ export async function parseProductPage(url) {
     // 标题命中服装关键词 → 自动识别；否则交给端上手动选择，绝不再硬拒。
     isClothing = true;
     if (autoClothing) {
-      const type = detectType(title);
-      const color = detectColor(title);
       garments.push({
         id: `g-${Date.now().toString(36)}`,
-        type,
         name: title,
-        color: color === "#f3f4f6" ? "#e5e7eb" : color,
-        accentColor: color,
-        region: REGION_MAP[type] || "upper",
+        region: detectRegion(title),
       });
       incomplete = !meta.hasImage; // 仅主图缺失时 incomplete
     } else {

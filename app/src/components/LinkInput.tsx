@@ -3,7 +3,7 @@ import { Link2, Sparkles, Loader2, Upload, ImageIcon, Maximize2 } from "lucide-r
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseProduct } from "@/lib/parseLink";
-import { compressDataUrl } from "@/lib/image";
+import { compressDataUrl, isImageFile, readImageFileAsDataUrl } from "@/lib/image";
 import { recognizeProductImageApi } from "@/lib/api";
 import { SAMPLE_LINK } from "@/lib/sampleData";
 import type { Garment, ParsedProduct } from "@/types";
@@ -12,16 +12,6 @@ import { toast } from "sonner";
 import { ImageLightbox } from "@/components/ImageLightbox";
 
 type Mode = "link" | "image";
-
-/** FileReader 读取为 dataURL */
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.onerror = () => reject(new Error("图片读取失败"));
-    r.readAsDataURL(file);
-  });
-}
 
 export function LinkInput({
   onParsed,
@@ -79,14 +69,14 @@ export function LinkInput({
 
   /** 直接上传服装图片：压缩后调用视觉模型自动识别服装类型与颜色 */
   async function handleImage(file: File) {
-    if (!file.type.startsWith("image/")) {
+    if (!isImageFile(file)) {
       toast.error("请选择图片文件");
       return;
     }
     setLoading(true);
     onStart?.();
     try {
-      const raw = await readFileAsDataUrl(file);
+      const raw = await readImageFileAsDataUrl(file);
       const compressed = await compressDataUrl(raw, 1280, 0.85);
       setPreview(compressed);
 
@@ -207,7 +197,7 @@ export function LinkInput({
           <input
             ref={fileRef}
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/webp"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -226,7 +216,7 @@ export function LinkInput({
             ) : (
               <ImageIcon className="h-6 w-6" />
             )}
-            <span>点击选择服装图片（支持 JPG / PNG）</span>
+            <span>点击选择服装图片（支持 JPG / PNG / WEBP）</span>
             <span className="text-xs text-muted-foreground/80">
               上传后将自动识别服装类型与颜色
             </span>

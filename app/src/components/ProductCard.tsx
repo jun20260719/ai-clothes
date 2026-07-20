@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { GARMENT_LABELS, REGION_OPTIONS } from "@/lib/garments";
+import { REGION_OPTIONS, REGION_LABELS } from "@/lib/garments";
 import type { ParsedProduct } from "@/types";
 import { cn } from "@/lib/utils";
 import { ImageLightbox } from "@/components/ImageLightbox";
@@ -120,13 +120,10 @@ export function ProductCard({
                         : "border-border hover:border-primary/50",
                     )}
                   >
-                    <span
-                      className="h-3.5 w-3.5 rounded-full border border-black/10"
-                      style={{ background: g.color }}
-                    />
-                    {GARMENT_LABELS[g.type]}
-                    <span className="max-w-[140px] truncate text-xs text-muted-foreground">
-                      {g.name.replace(GARMENT_LABELS[g.type], "")}
+                    <span className="h-2.5 w-2.5 rounded-full border border-primary/30 bg-primary/70" />
+                    <span className="font-medium">{g.name}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {REGION_LABELS[g.region]}
                     </span>
                   </button>
                 );

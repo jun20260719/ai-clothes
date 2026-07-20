@@ -1,29 +1,5 @@
 // 全局类型定义
 
-/** 支持识别的服装大类 */
-export type GarmentType =
-  | "tshirt" // T恤
-  | "polo" // POLO衫
-  | "shirt" // 衬衫
-  | "hoodie" // 卫衣/连帽衫
-  | "sweater" // 毛衣
-  | "cardigan" // 针织开衫
-  | "vest" // 马甲/背心外套
-  | "jacket" // 夹克
-  | "blazer" // 西装/西服
-  | "coat" // 大衣/外套
-  | "down" // 羽绒服
-  | "windbreaker" // 风衣
-  | "dress" // 连衣裙
-  | "skirt" // 半身裙
-  | "pants" // 裤子
-  | "jeans" // 牛仔裤
-  | "shorts" // 短裤
-  | "tanktop" // 背心/吊带
-  | "suit" // 套装（上衣+下衣）
-  | "jumpsuit" // 连体裤/连身裤
-  | "other"; // 其他/未知
-
 /** 购物平台 */
 export type Platform =
   | "taobao"
@@ -37,13 +13,8 @@ export type Platform =
 /** 识别出的单件服装 */
 export interface Garment {
   id: string;
-  type: GarmentType;
   /** 中文名称，如「纯棉圆领短袖T恤」 */
   name: string;
-  /** 主色（HEX），用于试衣合成 */
-  color: string;
-  /** 副色（HEX），用于装饰 */
-  accentColor: string;
   /** 试衣覆盖区域：上半身 / 下半身 / 全身 */
   region: "upper" | "lower" | "full";
 }
