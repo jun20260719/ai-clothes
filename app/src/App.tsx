@@ -75,7 +75,7 @@ function saveMeasurements(m: BM) {
 const FEATURES = [
   { icon: Camera, title: "上传自拍", desc: "上传或拍摄一张照片，即可在线试穿" },
   { icon: Ruler, title: "补充身体数据", desc: "填写身高体重三围，试衣版型更贴合逼真" },
-  { icon: Link2, title: "一键粘贴链接", desc: "复制各大平台的商品链接，自动识别是否为服装" },
+  { icon: Link2, title: "添加商品", desc: "粘贴购物平台链接，或直接上传服装图片" },
 ];
 
 export default function App() {
@@ -298,7 +298,7 @@ export default function App() {
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Link2 className="h-4 w-4 text-primary" />
-                粘贴商品链接
+                添加商品（链接 / 图片）
               </CardTitle>
             </CardHeader>
             <CardContent>
