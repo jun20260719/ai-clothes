@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, ".env") });
 import express from "express";
 import cors from "cors";
-import { parseProductPage, makeGarment } from "./parse.js";
+import { parseProductPage, makeGarment, extractItemId } from "./parse.js";
 import { runTryOn, resolveToDataUrl } from "./tryon.js";
 import { visionConfigured, visionModel, estimateBodyFromImage, recognizeProductImage } from "./vision.js";
 
@@ -28,10 +28,56 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// ① 真实商品链接解析
+/* ──────────────────────────────────────────────────────────────────────────
+ * 商品链接解析结果缓存
+ * 相同商品（按 itemId / 规范 URL 归一化）命中即直接返回，避免每次都重新
+ * 抓取页面 + 请求 AI 视觉模型识别，既省耗时又省额度。
+ * - 进程内内存缓存，重启/重部署自动清空（可接受的简单策略）。
+ * - TTL 默认 6 小时，可用环境变量 PARSE_CACHE_TTL（单位：小时）覆盖。
+ * - 读取时清理过期项，并对超大缓存做兜底收缩，避免内存无限增长。
+ * ──────────────────────────────────────────────────────────────────────── */
+const parseCache = new Map(); // key -> { expires, product }
+const PARSE_CACHE_TTL = (Number(process.env.PARSE_CACHE_TTL) || 6) * 60 * 60 * 1000;
+
+function parseCacheKey(url) {
+  const id = extractItemId(url); // 淘宝 num_iid / itemId 等 → 同一商品不同 UTMs 共享缓存
+  if (id) return `item:${id}`;
+  // 退化为规范 URL：去掉末尾斜杠与常见无效 query，降低重复缓存
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return `url:${u.toString().replace(/\/$/, "")}`;
+  } catch {
+    return `url:${url.replace(/\/+$/, "")}`;
+  }
+}
+
+function pruneParseCache() {
+  const now = Date.now();
+  if (parseCache.size > 300) {
+    // 容量兜底：超阈值时整体重建仅保留未过期项
+    const kept = new Map();
+    for (const [k, v] of parseCache) if (v.expires > now) kept.set(k, v);
+    parseCache.clear();
+    for (const [k, v] of kept) parseCache.set(k, v);
+  } else {
+    for (const [k, v] of parseCache) if (v.expires <= now) parseCache.delete(k);
+  }
+}
+
+// ① 真实商品链接解析（带缓存）
 app.get("/api/parse", async (req, res) => {
   const url = (req.query.url || "").toString().trim();
   if (!url) return res.status(400).json({ ok: false, error: "缺少 url 参数" });
+
+  const key = parseCacheKey(url);
+  pruneParseCache();
+  const hit = parseCache.get(key);
+  if (hit && hit.expires > Date.now()) {
+    console.log(`[parse] cache HIT (${key})`);
+    return res.json({ ok: true, product: hit.product, mock: false, cached: true });
+  }
+
   try {
     const product = await parseProductPage(url);
     // 预取商品主图并转为 dataURL 一并返回：
@@ -41,7 +87,8 @@ app.get("/api/parse", async (req, res) => {
       const dataUrl = await resolveToDataUrl(product.imageUrl);
       if (dataUrl) product.imageUrl = dataUrl;
     }
-    res.json({ ok: true, product, mock: false });
+    parseCache.set(key, { expires: Date.now() + PARSE_CACHE_TTL, product });
+    res.json({ ok: true, product, mock: false, cached: false });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message || "解析失败" });
   }

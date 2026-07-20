@@ -3,7 +3,7 @@ import { dirname, join } from "path";
 import dotenv from "dotenv";
 dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), ".env") });
 import * as cheerio from "cheerio";
-import { recognizeProductImage } from "./vision.js";
+import { recognizeProductImage, visionConfigured } from "./vision.js";
 
 /* ── 平台识别 ── */
 const PLATFORM_RULES = [
@@ -25,7 +25,7 @@ const PLATFORM_NAME = {
 };
 
 /* ── 从链接提取商品 id（淘宝 num_iid / itemId 等）── */
-function extractItemId(url) {
+export function extractItemId(url) {
   const m =
     url.match(/[?&](?:id|item_id|itemId|num_iid)=(\d{6,})/i) ||
     url.match(/\/(\d{10,})(?:\.html|\?|$)/);
@@ -766,21 +766,27 @@ export async function parseProductPage(url) {
     }
   }
 
-  // 视觉识别兜底：购物平台 + 有主图，但服装未识别 / 缺价格 / 缺标题时，
-  // 用商品图自动补全（HTML 已确认的字段优先，缺失的才用视觉补）。
-  const needsVision =
-    platform !== "unknown" &&
-    meta.hasImage &&
-    (garments.length === 0 || meta.price == null || !meta.title || meta.title === finalUrl);
-  if (needsVision) {
-    console.log(`[parse] Needs vision: hasImage=${meta.hasImage} garments=${garments.length} title=${meta.title ? '"' + meta.title.substring(0,40) + '"' : 'EMPTY'} price=${meta.price}`);
-    const rec = await tryVision(platform, finalUrl, meta);
+  // 视觉识别：购物平台 + 有主图 + 配置视觉模型 + 服装类 时统一执行。
+  // 作用：
+  //   ① 补全 HTML 未能拿到的标题/价格（已确认字段优先，缺失才用视觉补）；
+  //   ② 为服装补充「视觉细节描述 detail」——这是「服装描述」输入框与试衣 prompt 的核心参考，
+  //      仅靠标题关键词无法获得，必须让视觉模型从商品主图提取。
+  // 该调用由 /api/parse 的结果缓存保护：同一商品重复解析会直接命中缓存，不会重复请求 AI。
+  // 注意：即便 HTML 已识别出标题/价格，仍要跑一次视觉模型，只为拿 detail。
+  const canVision = platform !== "unknown" && meta.hasImage && isClothing && visionConfigured;
+  if (canVision) {
+    console.log(`[parse] Vision enrichment: hasImage=${meta.hasImage} garments=${garments.length} title=${meta.title ? '"' + meta.title.substring(0,40) + '"' : 'EMPTY'} price=${meta.price}`);
+    const rec = await recognizeProductImage(meta.image);
     if (rec) {
-      const mergedGarments = garments.length > 0 ? garments : rec.garments;
       const mergedTitle =
-        meta.title && meta.title !== finalUrl ? meta.title : rec.title;
+        meta.title && meta.title !== finalUrl ? meta.title : rec.title || meta.title || title;
       const mergedPrice =
         meta.price != null && meta.price !== 0 ? meta.price : rec.price || 0;
+      // 已有关键词识别出的服装 → 仅补充 detail；否则用视觉结果新建一件服装。
+      const finalGarments = garments.length
+        ? garments.map((g) => ({ ...g, detail: rec.detail || g.detail || "" }))
+        : [makeGarment(mergedTitle || "服装", rec.region || "upper", rec.detail || "")];
+      console.log(`[parse] Vision enriched: detail=${rec.detail ? rec.detail.length + "chars" : "empty"} garments=${finalGarments.length}`);
       return {
         url: finalUrl,
         platform,
@@ -789,8 +795,8 @@ export async function parseProductPage(url) {
         price: mergedPrice,
         shop: meta.shop || "",
         isClothing: true,
-        incomplete: mergedGarments.length === 0,
-        garments: mergedGarments,
+        incomplete: false,
+        garments: finalGarments,
         mock: false,
         itemId: extractItemId(finalUrl),
         cookieUsed: HAS_COOKIE && /taobao|tmall/.test(platform),

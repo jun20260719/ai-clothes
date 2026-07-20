@@ -157,14 +157,25 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
 
   // 区域：只提取图 2 的哪个部位服装
   const REGION_GUIDE = {
-    upper: { scope: "只提取图 2 中的【上身服装】（颈部/肩膀到腰臀之间），替换图 1 中人物的上身服装", keep: "下半身服装（裤子/裙子/鞋）必须与图 1 完全一致，禁止改动。" },
-    lower: { scope: "只提取图 2 中的【下身服装】（腰部到脚踝），替换图 1 中人物的下身服装", keep: "上半身服装（上衣/外套）必须与图 1 完全一致，禁止改动。" },
-    full:  { scope: "只提取图 2 中的【全套服装】，替换图 1 中人物的全套服装", keep: "" },
+    upper: { scope: "只提取第二张图中的【上身服装】（颈部/肩膀到腰臀之间），替换第一张人物的上身服装", keep: "下半身服装（裤子/裙子/鞋）必须与原图完全一致，禁止改动。" },
+    lower: { scope: "只提取第二张图中的【下身服装】（腰部到脚踝），替换第一张人物的下身服装", keep: "上半身服装（上衣/外套）必须与原图完全一致，禁止改动。" },
+    full:  { scope: "提取第二张图中的整套服装（或连体款式），替换第一张人物的全身服装", keep: "" },
   };
   const guide = REGION_GUIDE[region] || REGION_GUIDE.full;
 
   // ── 双图模式：有商品图 ──
   if (opts.productImage) {
+    return [
+      `你将根据两张图片生成一张新图片。`,
+      `第一张：用户本人照片，必须完整保留其脸、发型、体型、姿势、背景。`,
+      `第二张：商品（服装）图片。`,
+      `任务：${guide.scope}，输出这张新图片。`,
+      ``,
+      `身份锁定：输出的人物必须与第一张图是同一人，脸型 / 五官 / 发型 / 肤色 / 体型 / 姿势 / 背景 100% 保持原样，严禁参考第二张图中模特的任何特征。`,
+      guide.keep ? `区域保持：${guide.keep}` : ``,
+      `质量：${garmentDetail ? "目标服装参考：" + garmentDetail + "。" : `目标服装类型：服装，主色：未指定颜色。`}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
+    ].filter(Boolean).join("\n");
+
     return [
       `基于两张参考图进行真实人像换装编辑:`,
       `以图1作为唯一人物底图和场景底图：`,
@@ -322,7 +333,13 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
   };
 
   // 负面提示：强化身份锁定（图 1  的人不被图 2 的模特替换）
-  const negativePrompt = "换脸，改变五官，改变脸型，改变发型，改变表情，改变头部角度，改变身体姿势，改变站姿，改变手臂位置，改变背景，改变构图，改变光影，改变人物身份，重绘脸部，重绘头发，重绘皮肤，过度磨皮，自动美颜，图2模特五官，图2模特脸型，图2模特身材，服装穿模，服装浮空，白边，抠图痕迹，拼接痕迹，两套衣服重叠，布料悬浮，边缘不自然，光影不一致，色差，畸形手臂，畸形手指，腿部变形，身体拉伸，比例失真，卡通感，二次元，油画感，低清晰度，过度锐化，过度滤镜";
+  const negativePrompt = [
+    "改变人物身份",
+    "替换为第二张图的模特脸/发型/肤色/身材",
+    "改变背景或姿势",
+    "服装与身材不贴合",
+    "白边、拼接痕迹、浮空服装",
+  ].join("，");
 
   // Agnes / OpenAI 兼容网关风格：图生图走 extra_body.image（数组，支持多张）
   // 真试衣模式图序：[自拍照(底图/主体), 商品图(服装参考)]
@@ -335,10 +352,10 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
     model,
     prompt,
     size,
-    image: images,
     negative_prompt: negativePrompt,
     extra_body: {
       response_format: "b64_json",
+      image: images,
     },
   };
 
