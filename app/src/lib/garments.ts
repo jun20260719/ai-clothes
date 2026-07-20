@@ -25,6 +25,20 @@ export const GARMENT_LABELS: Record<GarmentType, string> = {
   other: "服装",
 };
 
+/** 试衣覆盖区域选项（前端选择 UI 用） */
+export const REGION_OPTIONS: { value: "upper" | "lower" | "full"; label: string }[] = [
+  { value: "upper", label: "上半身" },
+  { value: "lower", label: "下半身" },
+  { value: "full", label: "全身" },
+];
+
+/** 区域中文名 */
+export const REGION_LABELS: Record<"upper" | "lower" | "full", string> = {
+  upper: "上半身",
+  lower: "下半身",
+  full: "全身",
+};
+
 /** 区域映射 */
 export const REGION_MAP: Record<GarmentType, "upper" | "lower" | "full"> = {
   tshirt: "upper",

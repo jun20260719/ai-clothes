@@ -142,6 +142,18 @@ export default function App() {
     setResult(null);
   }
 
+  /** 用户手动修改试衣部位（上半身/下半身/全身）→ 更新选中服装的 region，生成时据此判定 */
+  function handleRegionChange(region: "upper" | "lower" | "full") {
+    if (!product) return;
+    setProduct({
+      ...product,
+      garments: product.garments.map((g) =>
+        g.id === selectedId ? { ...g, region } : g,
+      ),
+    });
+    setResult(null);
+  }
+
   /** AI 识别身体数据：上传全身照后一键估算并回填（已有值不被覆盖，便于微调） */
   async function handleEstimateBody() {
     if (!selfieUrl) return;
@@ -318,6 +330,7 @@ export default function App() {
                   selectedId={selectedId}
                   onSelect={setSelectedId}
                   onReset={resetLink}
+                  onRegionChange={handleRegionChange}
                 />
               </CardContent>
             </Card>

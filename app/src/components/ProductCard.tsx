@@ -1,11 +1,13 @@
-import { AlertTriangle, Store, Tag, Shirt, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Store, Tag, Shirt, RefreshCw, Maximize2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { GARMENT_LABELS } from "@/lib/garments";
+import { GARMENT_LABELS, REGION_OPTIONS } from "@/lib/garments";
 import type { ParsedProduct } from "@/types";
 import { cn } from "@/lib/utils";
+import { ImageLightbox } from "@/components/ImageLightbox";
 
 const PLATFORM_NAME: Record<string, string> = {
   taobao: "淘宝",
@@ -22,13 +24,18 @@ export function ProductCard({
   selectedId,
   onSelect,
   onReset,
+  onRegionChange,
 }: {
   product: ParsedProduct;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onReset: () => void;
+  /** 用户手动修改试衣部位（上半身/下半身/全身）时回调 */
+  onRegionChange?: (region: "upper" | "lower" | "full") => void;
 }) {
   const canRecognize = product.isClothing && product.garments.length > 0;
+  const selectedGarment = product.garments.find((g) => g.id === selectedId);
+  const [zoomImage, setZoomImage] = useState<string | null>(null);
 
   return (
     <Card className="overflow-hidden border-border/60 shadow-sm">
@@ -65,11 +72,21 @@ export function ProductCard({
 
         <div className="mt-3 flex gap-3">
           {product.imageUrl && (
-            <img
-              src={product.imageUrl}
-              alt={product.title}
-              className="h-20 w-20 shrink-0 rounded-lg border border-border/60 object-cover"
-            />
+            <button
+              type="button"
+              onClick={() => setZoomImage(product.imageUrl)}
+              className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-border/60"
+              title="点击放大查看"
+            >
+              <img
+                src={product.imageUrl}
+                alt={product.title}
+                className="h-full w-full object-cover transition-transform group-hover:scale-105"
+              />
+              <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-opacity group-hover:bg-black/30 group-hover:opacity-100">
+                <Maximize2 className="h-5 w-5 text-white" />
+              </span>
+            </button>
           )}
           <p className="line-clamp-3 text-sm font-medium leading-relaxed">
             {product.title}
@@ -115,6 +132,38 @@ export function ProductCard({
                 );
               })}
             </div>
+
+            {/* 试衣部位：自动填充 + 可手动修改 */}
+            {selectedGarment && (
+              <div className="mt-4">
+                <div className="mb-2 text-sm font-medium text-foreground">
+                  试衣部位
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    已自动识别，可手动修改
+                  </span>
+                </div>
+                <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
+                  {REGION_OPTIONS.map((opt) => {
+                    const active = selectedGarment.region === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => onRegionChange?.(opt.value)}
+                        className={cn(
+                          "flex-1 rounded-md px-3 py-1.5 transition-colors",
+                          active
+                            ? "bg-background font-medium shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -136,6 +185,13 @@ export function ProductCard({
           换一个链接 / 图片
         </Button>
       </CardContent>
+
+      <ImageLightbox
+        src={zoomImage}
+        alt={product.title}
+        open={!!zoomImage}
+        onClose={() => setZoomImage(null)}
+      />
     </Card>
   );
 }

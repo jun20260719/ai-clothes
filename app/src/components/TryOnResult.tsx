@@ -1,8 +1,10 @@
-import { Download, Sparkles, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { Download, Sparkles, RotateCcw, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { GARMENT_LABELS } from "@/lib/garments";
 import type { TryOnResult } from "@/types";
+import { ImageLightbox } from "@/components/ImageLightbox";
 
 export function TryOnResult({
   selfieUrl,
@@ -13,6 +15,8 @@ export function TryOnResult({
   result: TryOnResult;
   onReset: () => void;
 }) {
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null);
+
   function download() {
     const url = result.dataUrl || result.imageUrl || "";
     const a = document.createElement("a");
@@ -26,18 +30,38 @@ export function TryOnResult({
   return (
     <div className="w-full">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <figure className="overflow-hidden rounded-2xl border border-border/60">
-          <img src={selfieUrl} alt="原图" className="aspect-[3/4] w-full object-cover" />
+        <figure className="group relative overflow-hidden rounded-2xl border border-border/60">
+          <button
+            type="button"
+            onClick={() => setZoomSrc(selfieUrl)}
+            className="block w-full"
+            title="点击放大查看"
+          >
+            <img src={selfieUrl} alt="原图" className="aspect-[3/4] w-full object-cover" />
+          </button>
+          <span className="pointer-events-none absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+            <Maximize2 className="h-4 w-4 text-white" />
+          </span>
           <figcaption className="bg-muted/40 px-3 py-2 text-center text-xs text-muted-foreground">
             原图
           </figcaption>
         </figure>
-        <figure className="overflow-hidden rounded-2xl border border-primary/40 shadow-md">
-          <img
-            src={resultSrc}
-            alt="试衣结果"
-            className="aspect-[3/4] w-full object-cover"
-          />
+        <figure className="group relative overflow-hidden rounded-2xl border border-primary/40 shadow-md">
+          <button
+            type="button"
+            onClick={() => setZoomSrc(resultSrc)}
+            className="block w-full"
+            title="点击放大查看"
+          >
+            <img
+              src={resultSrc}
+              alt="试衣结果"
+              className="aspect-[3/4] w-full object-cover"
+            />
+          </button>
+          <span className="pointer-events-none absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+            <Maximize2 className="h-4 w-4 text-white" />
+          </span>
           <figcaption className="flex items-center justify-center gap-2 bg-primary/10 px-3 py-2 text-center text-xs font-medium text-primary">
             <Sparkles className="h-3.5 w-3.5" /> 试衣效果
           </figcaption>
@@ -63,6 +87,13 @@ export function TryOnResult({
           <RotateCcw className="mr-1.5 h-4 w-4" /> 再试一件
         </Button>
       </div>
+
+      <ImageLightbox
+        src={zoomSrc}
+        alt="放大查看"
+        open={!!zoomSrc}
+        onClose={() => setZoomSrc(null)}
+      />
     </div>
   );
 }

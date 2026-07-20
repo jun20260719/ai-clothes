@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Link2, Sparkles, Loader2, Upload, ImageIcon } from "lucide-react";
+import { Link2, Sparkles, Loader2, Upload, ImageIcon, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseProduct } from "@/lib/parseLink";
@@ -9,6 +9,7 @@ import { SAMPLE_LINK } from "@/lib/sampleData";
 import type { Garment, ParsedProduct } from "@/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { ImageLightbox } from "@/components/ImageLightbox";
 
 type Mode = "link" | "image";
 
@@ -33,6 +34,7 @@ export function LinkInput({
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [zoomPreview, setZoomPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function runParse(value: string) {
@@ -231,11 +233,21 @@ export function LinkInput({
           </button>
           {preview && (
             <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
-              <img
-                src={preview}
-                alt="已上传的服装"
-                className="h-16 w-16 rounded-lg border border-border/60 object-cover"
-              />
+              <button
+                type="button"
+                onClick={() => setZoomPreview(preview)}
+                className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-border/60"
+                title="点击放大查看"
+              >
+                <img
+                  src={preview}
+                  alt="已上传的服装"
+                  className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                />
+                <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-opacity group-hover:bg-black/30 group-hover:opacity-100">
+                  <Maximize2 className="h-4 w-4 text-white" />
+                </span>
+              </button>
               <div className="text-xs text-muted-foreground">
                 已载入服装图片，正在/已自动识别服装信息。
               </div>
@@ -243,6 +255,13 @@ export function LinkInput({
           )}
         </div>
       )}
+
+      <ImageLightbox
+        src={zoomPreview}
+        alt="已上传的服装"
+        open={!!zoomPreview}
+        onClose={() => setZoomPreview(null)}
+      />
     </div>
   );
 }
