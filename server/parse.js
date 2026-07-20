@@ -135,11 +135,12 @@ function detectRegion(title) {
   return "upper";
 }
 
-export function makeGarment(name, region) {
+export function makeGarment(name, region, detail = "") {
   return {
     id: `g-${Date.now().toString(36)}`,
     name: name || "服装",
     region: REGION_VALUES.includes(region) ? region : "upper",
+    detail: typeof detail === "string" ? detail : "",
   };
 }
 function isClothingTitle(t) {
@@ -528,13 +529,17 @@ async function tryVision(platform, finalUrl, meta) {
     console.log(`[parse] Vision returned null, skipping`);
     return null;
   }
-  console.log(`[parse] Vision result: title="${rec.title}" price=${rec.price} region=${rec.region}`);
+  console.log(`[parse] Vision result: title="${rec.title}" price=${rec.price} region=${rec.region} detail=${rec.detail ? rec.detail.length + "chars" : "empty"}`);
 
   const garments = [];
+  // 识别到任意有效服装信息（region 或 title/detail）即视为识别成功；
+  // region 缺失时按标题关键词推断，仍缺失则默认 upper。
   if (rec.region) {
-    garments.push(makeGarment(rec.title || "服装", rec.region));
+    garments.push(makeGarment(rec.title || "服装", rec.region, rec.detail));
   } else if (rec.title && isClothingTitle(rec.title)) {
-    garments.push(makeGarment(rec.title, detectRegion(rec.title)));
+    garments.push(makeGarment(rec.title, detectRegion(rec.title), rec.detail));
+  } else if (rec.title || rec.detail) {
+    garments.push(makeGarment(rec.title || "服装", "upper", rec.detail));
   }
 
   const title =
@@ -746,22 +751,14 @@ export async function parseProductPage(url) {
     // 普通网页：仅按关键词判定是否为服装，无法识别则视为非服装
     isClothing = autoClothing;
     if (isClothing) {
-      garments.push({
-        id: `g-${Date.now().toString(36)}`,
-        name: title,
-        region: detectRegion(title),
-      });
+      garments.push(makeGarment(title, detectRegion(title)));
     }
   } else {
     // 购物平台商品链接：用户粘贴的目的就是衣服，默认当作可试衣。
     // 标题命中服装关键词 → 自动识别；否则交给端上手动选择，绝不再硬拒。
     isClothing = true;
     if (autoClothing) {
-      garments.push({
-        id: `g-${Date.now().toString(36)}`,
-        name: title,
-        region: detectRegion(title),
-      });
+      garments.push(makeGarment(title, detectRegion(title)));
       incomplete = !meta.hasImage; // 仅主图缺失时 incomplete
     } else {
       // 标题未命中服装关键词：引导用户手动选择服装，不再判定为「非服装」

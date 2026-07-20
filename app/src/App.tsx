@@ -154,6 +154,18 @@ export default function App() {
     setResult(null);
   }
 
+  /** 用户编辑服装描述（textarea）→ 更新选中服装的 detail，生成时透传给试衣接口。
+   *  不清空已有结果：用户可自行点击「生成试衣效果」重新生成，避免输入过程中结果频繁消失。 */
+  function handleDetailChange(detail: string) {
+    if (!product) return;
+    setProduct({
+      ...product,
+      garments: product.garments.map((g) =>
+        g.id === selectedId ? { ...g, detail } : g,
+      ),
+    });
+  }
+
   /** AI 识别身体数据：上传全身照后一键估算并回填（已有值不被覆盖，便于微调） */
   async function handleEstimateBody() {
     if (!selfieUrl) return;
@@ -331,6 +343,7 @@ export default function App() {
                   onSelect={setSelectedId}
                   onReset={resetLink}
                   onRegionChange={handleRegionChange}
+                  onDetailChange={handleDetailChange}
                 />
               </CardContent>
             </Card>

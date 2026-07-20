@@ -155,7 +155,7 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
   const selfieUrl = imgToDataUrl(selfie);
   const payload = {
     selfie: selfieUrl,
-    garment: { name: garment.name, region: garment.region },
+    garment: { name: garment.name, region: garment.region, detail: garment.detail },
     measurements: measurements as unknown as Record<string, string>,
     productImage: productImageUrl || undefined,
   };

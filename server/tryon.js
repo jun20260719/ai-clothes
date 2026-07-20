@@ -23,7 +23,8 @@
  */
 
 // 服装类型/颜色已不再作为 garment 字段；试衣由商品原图直接驱动，
-// 款式/颜色由视觉提取的 garmentDetail 描述，region 决定覆盖部位。
+// 款式/颜色由「识别阶段一次性产出的 garment.detail」描述（前端可编辑），
+// region 决定覆盖部位。试衣时不再二次调用视觉模型提取细节，节省一次 AI 调用。
 
 
 /** 把图像接口返回（b64 或 url）统一规范成可直接 <img> 使用的字符串 */
@@ -361,60 +362,11 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
 }
 
 /**
- * 用视觉模型提取商品图中目标服装的精确视觉细节。
- *
- * 关键改进：传入 region，让视觉模型只描述目标区域的服装，
- * 忽略模特身上的其它服装（避免描述了模特的整套穿搭，
- * 导致换装时把没买的部位也一起换掉）。
- *
- * @param {string} productDataUrl 商品图的 dataURL
- * @param {string} region 目标区域 upper/lower/full
- * @returns {Promise<string>} 服装细节描述，失败返回空字符串
- */
-async function extractGarmentDetail(productDataUrl, region = "full") {
-  try {
-    const visionBase = (process.env.VISION_BASE_URL || process.env.IMAGE_BASE_URL || "https://apihub.agnes-ai.com/v1").replace(/\/$/, "");
-    const visionKey = process.env.VISION_API_KEY || process.env.IMAGE_API_KEY;
-    const visionModel = process.env.VISION_MODEL || "agnes-2.0-flash";
-    if (!visionKey) return "";
-
-    const regionHint = {
-      upper: "只描述模特【上半身】穿的服装（上衣/外套等），忽略下半身",
-      lower: "只描述模特【下半身】穿的服装（裤子/裙子等），忽略上半身",
-      full: "描述模特穿的整套服装或连体款式",
-    }[region] || "描述图中主要服装";
-
-    const res = await fetch(`${visionBase}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${visionKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: visionModel,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "text", text: `请仔细观察这张图片中的服装（${regionHint}），用简洁中文描述其视觉细节。必须包含：①主色调和图案（印花/条纹/纯色/格子等）②款式类别（T恤/衬衫/裤子/连衣裙/套装/外套等）③版型特征（领型、袖长、衣长、裤长、宽松/修身）④面料质感观感（棉质/丝绸/牛仔/针织/雪纺等）⑤可见的装饰细节（扣子/刺绣/蕾丝/拉链等）。禁止描述模特的脸、发型、肤色、身材、姿势、背景。输出格式：分条列出，每条一句话，总共不超过120字。` },
-            { type: "image_url", image_url: { url: productDataUrl } },
-          ],
-        }],
-        max_tokens: 350,
-      }),
-    });
-    if (!res.ok) return "";
-    const json = await res.json();
-    const content = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || "";
-    const text = typeof content === "string" ? content : JSON.stringify(content);
-    const cleaned = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 250);
-    return cleaned || "";
-  } catch (e) {
-    console.log("[tryon] 商品服装细节提取跳过:", e.message);
-    return "";
-  }
-}
-
-/**
  * 运行 AI 试衣
  * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string}} params
  *   productImage 为商品主图（URL 或 dataURL）。提供时走「真试衣」：以自拍为底，把商品服装穿到用户身上。
+ *   garment.detail 为识别阶段产出的服装视觉细节描述（前端可编辑），直接作为试衣 prompt 参考，
+ *   不再在试衣阶段二次调用视觉模型提取，节省一次 AI 调用。
  * @returns {Promise<{image:string}>}
  */
 export async function runTryOn({ selfie, garment, measurements, productImage }) {
@@ -437,13 +389,13 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
   const productB64 = productImage ? await resolveToDataUrlCached(productImage) : null;
   log(productB64 ? `商品图已就绪 (${productB64.startsWith("data:") ? "dataURL" : "其他"})` : "商品图拉取失败，走模式 B");
 
-  // ★ 关键步骤：用视觉模型提取商品图中目标区域的服装细节（按 region 聚焦）
+  // ★ 服装细节：直接复用识别阶段产出、经用户确认/编辑的 garment.detail，
+  //   不再在试衣阶段调用视觉模型二次提取（原 extractGarmentDetail 已移除）。
   const region = garment?.region || "full";
-  const garmentDetail = productB64
-    ? await extractGarmentDetail(productB64, region)
-    : "";
-  log("视觉提取完成");
+  const garmentDetail = typeof garment?.detail === "string" ? garment.detail.trim() : "";
   if (garmentDetail) console.log(`[tryon] 商品服装细节 [${region}]: ${garmentDetail}`);
+  else console.log(`[tryon] 无服装细节描述，将退回 garment.name 兜底`);
+  log("准备 prompt");
 
   const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, garmentDetail });
   console.log(`[tryon] 生成图像 prompt: ${prompt}`);

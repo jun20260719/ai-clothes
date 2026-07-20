@@ -17,6 +17,12 @@ export interface Garment {
   name: string;
   /** 试衣覆盖区域：上半身 / 下半身 / 全身 */
   region: "upper" | "lower" | "full";
+  /**
+   * 服装视觉细节描述（AI 识别阶段一次性产出，合并了原试衣阶段的二次视觉提取）。
+   * 前端可在 textarea 中编辑，生成试衣时透传给 /api/tryon 作为 prompt 参考，
+   * 省去试衣时再调一次视觉模型。
+   */
+  detail?: string;
 }
 
 /** 链接解析结果 */

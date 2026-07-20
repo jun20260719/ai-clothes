@@ -3,8 +3,9 @@
  * --------------------------------------------------
  * 当 HTML 文本提取拿不全（标题/价格/服装类型缺失）但已有商品主图时，
  * 把商品图发给一个「能读图」的多模态模型，结构化识别出：
- *   { title, price, region }
- * 并回填到解析结果，免去用户手动选择。
+ *   { title, price, region, detail }
+ * 其中 detail 为目标服装的视觉细节描述（合并了原 tryon.js 的 extractGarmentDetail 逻辑），
+ * 识别阶段一次性产出，前端可编辑后直接传给 /api/tryon，省去试衣时的二次视觉调用。
  *
  * 默认复用 Agnes 的 agnes-2.0-flash（与画图模型 agnes-image-2.0-flash 同 Key、同 Base URL，
  * 走 OpenAI 兼容 /v1/chat/completions，支持 image_url 输入、可做结构化提取）。
@@ -78,8 +79,14 @@ function parseVisionJson(text, reasoningContent) {
     const title = typeof obj.title === "string" ? obj.title.trim() : "";
     const priceRaw = obj.price == null || obj.price === "" ? null : Number(obj.price);
     const price = Number.isFinite(priceRaw) ? priceRaw : null;
+    // detail：目标服装视觉细节描述（合并自原 tryon.js 的 extractGarmentDetail）。
+    // 清理可能的代码块标记，限制长度，避免 prompt 过长。
+    const detail =
+      typeof obj.detail === "string"
+        ? obj.detail.replace(/```[\s\S]*?```/g, "").replace(/^```|```$/g, "").trim().slice(0, 300)
+        : "";
 
-    return { title, price, region };
+    return { title, price, region, detail };
   } catch {
     return null;
   }
@@ -98,12 +105,13 @@ export async function recognizeProductImage(imageInput, { timeoutMs } = {}) {
   console.log(`[vision] Recognizing product image... model=${VISION_MODEL} timeout=${effectiveTimeout}`);
   const imageContent = await toImageContent(imageInput);
 
-  const prompt = `你是一个电商商品识别助手。请仔细观察这张商品主图，提取该商品的结构化信息。
+  const prompt = `你是一个电商服装识别助手。请仔细观察这张商品主图，提取该商品的结构化信息与目标服装的视觉细节。
 只返回一个 JSON 对象（不要任何解释、不要代码块标记），字段如下：
 {
   "title": "商品标题，提炼核心款式/材质，如「纯棉圆领短袖T恤」，无法判断则填空字符串",
   "price": 数值（单位元），无法判断则填 null,
-  "region": "upper（上装）或 lower（下装）或 full（连衣裙/全身）"
+  "region": "upper（上装）或 lower（下装）或 full（连衣裙/套装/全身）",
+  "detail": "对与 region 对应的主服装的视觉细节描述，需包含：①主色调和图案（印花/条纹/纯色/格子等）②款式类别（T恤/衬衫/裤子/连衣裙/套装/外套等）③版型特征（领型、袖长、衣长、裤长、宽松/修身）④面料质感观感（棉质/丝绸/牛仔/针织/雪纺等）⑤可见装饰细节（扣子/刺绣/蕾丝/拉链等）。禁止描述模特的脸、发型、肤色、身材、姿势、背景。用简洁中文，分条列出，每条一句话，总共不超过120字"
 }`;
 
   const ctrl = new AbortController();

@@ -22,6 +22,8 @@ export interface TryOnApiPayload {
   garment: {
     name?: string;
     region: "upper" | "lower" | "full";
+    /** 服装视觉细节描述（识别阶段产出、用户可编辑），后端直接用作试衣 prompt 参考 */
+    detail?: string;
   };
   measurements: Record<string, string>;
   /** 商品主图（URL 或 dataURL）；提供时后端走「换脸式」试衣，保留商品图姿势/服装 */

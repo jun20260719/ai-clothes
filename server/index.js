@@ -89,7 +89,7 @@ app.post("/api/estimate-body", async (req, res) => {
   }
 });
 
-// ④ 商品图视觉识别（上传图片 / 链接主图 → 自动识别服装类型与颜色，免去手动选择）
+// ④ 商品图视觉识别（上传图片 / 链接主图 → 自动识别服装信息与试衣部位，并返回服装视觉细节描述）
 app.post("/api/recognize", async (req, res) => {
   const { image } = req.body || {};
   if (!image) {
@@ -102,11 +102,15 @@ app.post("/api/recognize", async (req, res) => {
   }
   try {
     const rec = await recognizeProductImage(image);
-    // 未识别到有效服装（图里不是衣服 / 模型无法判断）→ recognized=false
-    if (!rec || !rec.garmentType || rec.garmentType === "other") {
+    // 识别到任意有效服装信息（标题或细节描述其一存在即视为识别成功）。
+    // region 缺失时默认 upper，避免模型偶尔漏返 region 而被误判为「无法识别」。
+    const hasInfo = !!(rec && (rec.title || rec.detail));
+    if (!hasInfo) {
       return res.json({ ok: true, recognized: false, garment: null });
     }
-    const garment = makeGarment(rec.garmentType, rec.title, rec.color, rec.region);
+    // 识别阶段一次性产出 region + detail（服装视觉细节），前端可编辑后传给 /api/tryon，
+    // 省去试衣时的二次视觉提取调用。
+    const garment = makeGarment(rec.title || "服装", rec.region || "upper", rec.detail || "");
     res.json({ ok: true, recognized: true, garment });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message || "识别失败" });

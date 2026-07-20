@@ -8,6 +8,7 @@ import { REGION_OPTIONS, REGION_LABELS } from "@/lib/garments";
 import type { ParsedProduct } from "@/types";
 import { cn } from "@/lib/utils";
 import { ImageLightbox } from "@/components/ImageLightbox";
+import { Textarea } from "@/components/ui/textarea";
 
 const PLATFORM_NAME: Record<string, string> = {
   taobao: "淘宝",
@@ -25,6 +26,7 @@ export function ProductCard({
   onSelect,
   onReset,
   onRegionChange,
+  onDetailChange,
 }: {
   product: ParsedProduct;
   selectedId: string | null;
@@ -32,6 +34,8 @@ export function ProductCard({
   onReset: () => void;
   /** 用户手动修改试衣部位（上半身/下半身/全身）时回调 */
   onRegionChange?: (region: "upper" | "lower" | "full") => void;
+  /** 用户编辑服装描述（textarea）时回调，回传最新文本 */
+  onDetailChange?: (detail: string) => void;
 }) {
   const canRecognize = product.isClothing && product.garments.length > 0;
   const selectedGarment = product.garments.find((g) => g.id === selectedId);
@@ -159,6 +163,24 @@ export function ProductCard({
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* 服装描述：AI 识别阶段一次性产出，用户可编辑，生成时透传给试衣接口 */}
+            {selectedGarment && (
+              <div className="mt-4">
+                <div className="mb-2 text-sm font-medium text-foreground">
+                  服装描述
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    AI 识别，可手动编辑（作为试衣参考）
+                  </span>
+                </div>
+                <Textarea
+                  value={selectedGarment.detail ?? ""}
+                  onChange={(e) => onDetailChange?.(e.target.value)}
+                  placeholder="如：纯棉圆领短袖T恤，白色，修身版型，短袖，胸前印花图案…"
+                  className="min-h-[84px] text-sm"
+                />
               </div>
             )}
           </div>
