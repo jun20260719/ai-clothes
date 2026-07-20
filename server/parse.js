@@ -143,6 +143,50 @@ export function makeGarment(name, region, detail = "") {
     detail: typeof detail === "string" ? detail : "",
   };
 }
+
+/**
+ * 由 HTML 元数据（标题关键词 / 试衣部位 / 价格）兜底生成「服装描述」detail。
+ * 视觉模型未配置、商品图无法抓取、或模型未返回 detail 时，用它保证 detail 不为空，
+ * 既能在前端「服装描述」输入框展示有意义内容，也能作为试衣 prompt 的参考。
+ * 视觉模型返回的 richer detail 优先；为空才回退到这里。
+ */
+const DETAIL_COLOR = [
+  "黑", "白", "红", "粉", "蓝", "绿", "灰", "米", "卡其", "藏青", "杏", "紫",
+  "黄", "橘", "橙", "咖", "棕", "银", "金", "酒红", "墨绿", "浅蓝", "天蓝",
+  "牛仔", "军绿", "薄荷", "焦糖", "香槟", "奶白",
+];
+const DETAIL_PATTERN = [
+  "纯色", "条纹", "格纹", "格子", "碎花", "印花", "波点", "圆点", "字母", "logo",
+  "刺绣", "拼接", "渐变", "撞色", "豹纹", "动物纹", "几何", "抽象", "复古", "法式",
+  "日系", "韩版", "ins", "简约", "油画", "迷彩",
+];
+const DETAIL_FABRIC = [
+  "棉", "麻", "丝", "羊毛", "针织", "雪纺", "涤纶", "牛仔", "皮革", "真皮", "呢",
+  "绒", "莱赛尔", "天丝", "莫代尔", "醋酸", "锦纶", "摇粒绒", "灯芯绒",
+];
+const DETAIL_STYLE = [
+  "修身", "宽松", "直筒", "阔腿", "收腰", "oversize", "bf", "显瘦", "常规",
+  "落肩", "娃娃", "a字", "高腰", "中长", "短款", "长款", "v领", "圆领", "立领",
+  "polo", "翻领", "无袖", "短袖", "长袖", "七分袖", "五分袖",
+];
+
+export function buildGarmentDetail(title, region, price) {
+  const t = (title || "").toLowerCase();
+  const regionLabel = { upper: "上装", lower: "下装", full: "连衣裙/套装" }[region] || "服装";
+  const pick = (arr) => arr.find((w) => t.includes(w.toLowerCase()));
+  const color = pick(DETAIL_COLOR);
+  const pattern = pick(DETAIL_PATTERN);
+  const fabric = pick(DETAIL_FABRIC);
+  const style = pick(DETAIL_STYLE);
+  const parts = [`商品为${regionLabel}`];
+  if (color) parts.push(`主色${color}`);
+  if (pattern) parts.push(`图案为${pattern}`);
+  if (fabric) parts.push(`面料${fabric}`);
+  if (style) parts.push(`版型${style}`);
+  if (price && Number.isFinite(price) && price > 0) parts.push(`参考价约¥${price}`);
+  parts.push("（可补充更细致的视觉描述）");
+  return parts.join("，");
+}
 function isClothingTitle(t) {
   const s = (t || "").toLowerCase();
   return CLOTHING_KEYWORDS.some((k) => s.includes(k.toLowerCase()));
@@ -534,12 +578,17 @@ async function tryVision(platform, finalUrl, meta) {
   const garments = [];
   // 识别到任意有效服装信息（region 或 title/detail）即视为识别成功；
   // region 缺失时按标题关键词推断，仍缺失则默认 upper。
+  // detail：视觉模型返回的优先，空则回退 HTML 元数据兜底，保证不为空。
+  const visionDetail = (rec.detail || "").trim();
+  const detailFor = (name, region, price) =>
+    visionDetail || buildGarmentDetail(name, region, price);
   if (rec.region) {
-    garments.push(makeGarment(rec.title || "服装", rec.region, rec.detail));
+    garments.push(makeGarment(rec.title || "服装", rec.region, detailFor(rec.title || "服装", rec.region, rec.price)));
   } else if (rec.title && isClothingTitle(rec.title)) {
-    garments.push(makeGarment(rec.title, detectRegion(rec.title), rec.detail));
+    const r = detectRegion(rec.title);
+    garments.push(makeGarment(rec.title, r, detailFor(rec.title, r, rec.price)));
   } else if (rec.title || rec.detail) {
-    garments.push(makeGarment(rec.title || "服装", "upper", rec.detail));
+    garments.push(makeGarment(rec.title || "服装", "upper", detailFor(rec.title || "服装", "upper", rec.price)));
   }
 
   const title =
@@ -751,14 +800,16 @@ export async function parseProductPage(url) {
     // 普通网页：仅按关键词判定是否为服装，无法识别则视为非服装
     isClothing = autoClothing;
     if (isClothing) {
-      garments.push(makeGarment(title, detectRegion(title)));
+      const r = detectRegion(title);
+      garments.push(makeGarment(title, r, buildGarmentDetail(title, r, meta.price)));
     }
   } else {
     // 购物平台商品链接：用户粘贴的目的就是衣服，默认当作可试衣。
     // 标题命中服装关键词 → 自动识别；否则交给端上手动选择，绝不再硬拒。
     isClothing = true;
     if (autoClothing) {
-      garments.push(makeGarment(title, detectRegion(title)));
+      const r = detectRegion(title);
+      garments.push(makeGarment(title, r, buildGarmentDetail(title, r, meta.price)));
       incomplete = !meta.hasImage; // 仅主图缺失时 incomplete
     } else {
       // 标题未命中服装关键词：引导用户手动选择服装，不再判定为「非服装」
@@ -782,10 +833,19 @@ export async function parseProductPage(url) {
         meta.title && meta.title !== finalUrl ? meta.title : rec.title || meta.title || title;
       const mergedPrice =
         meta.price != null && meta.price !== 0 ? meta.price : rec.price || 0;
-      // 已有关键词识别出的服装 → 仅补充 detail；否则用视觉结果新建一件服装。
+      // 已有关键词识别出的服装 → 视觉 detail 优先，空则回退 HTML 兜底；否则用视觉结果新建一件服装。
+      const visionDetail = (rec.detail || "").trim();
       const finalGarments = garments.length
-        ? garments.map((g) => ({ ...g, detail: rec.detail || g.detail || "" }))
-        : [makeGarment(mergedTitle || "服装", rec.region || "upper", rec.detail || "")];
+        ? garments.map((g) =>
+            ({ ...g, detail: visionDetail || buildGarmentDetail(g.name, g.region, meta.price) }),
+          )
+        : [
+            makeGarment(
+              mergedTitle || "服装",
+              rec.region || "upper",
+              visionDetail || buildGarmentDetail(mergedTitle, rec.region || "upper", mergedPrice),
+            ),
+          ];
       console.log(`[parse] Vision enriched: detail=${rec.detail ? rec.detail.length + "chars" : "empty"} garments=${finalGarments.length}`);
       return {
         url: finalUrl,
