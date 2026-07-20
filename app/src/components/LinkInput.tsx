@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseProduct } from "@/lib/parseLink";
 import { compressDataUrl } from "@/lib/image";
+import { recognizeProductImageApi } from "@/lib/api";
 import { SAMPLE_LINK } from "@/lib/sampleData";
-import type { ParsedProduct } from "@/types";
+import type { Garment, ParsedProduct } from "@/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -74,7 +75,7 @@ export function LinkInput({
     }
   }
 
-  /** 直接上传服装图片：压缩后作为商品主图，进入「手动选类型」流程 */
+  /** 直接上传服装图片：压缩后调用视觉模型自动识别服装类型与颜色 */
   async function handleImage(file: File) {
     if (!file.type.startsWith("image/")) {
       toast.error("请选择图片文件");
@@ -86,22 +87,37 @@ export function LinkInput({
       const raw = await readFileAsDataUrl(file);
       const compressed = await compressDataUrl(raw, 1280, 0.85);
       setPreview(compressed);
+
+      // 自动识别：把压缩后的图发给后端视觉模型，识别服装类型与颜色
+      const rec = await recognizeProductImageApi(compressed);
+      if (!rec.recognized || !rec.garment) {
+        toast.error("无法自动识别这件服装，请更换更清晰、仅含服装的图片后重试");
+        return;
+      }
+      const g = rec.garment as Garment;
       const product: ParsedProduct = {
         url: `file://${file.name}`,
         platform: "unknown",
-        title: file.name.replace(/\.[^.]+$/, ""),
-        imageUrl: compressed,
+        title: g.name || file.name.replace(/\.[^.]+$/, ""),
+        imageUrl: compressed, // 上传图即商品主图，也是试衣时的服装参考图
         price: 0,
         shop: "",
         isClothing: true,
-        garments: [],
+        garments: [g],
         mock: false,
-        incomplete: true,
+        incomplete: false,
+        aiRecognized: true,
       };
       onParsed(product);
-      toast.success("已载入服装图片，请选择服装类型后试衣");
+      toast.success("已自动识别服装信息，可直接试衣");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "图片处理失败");
+      const msg = e instanceof Error ? e.message : "图片处理失败";
+      const code = (e as Error & { code?: string }).code;
+      if (code === "NO_VISION") {
+        toast.error("后端未配置视觉识别模型，无法自动识别上传的图片");
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -210,7 +226,7 @@ export function LinkInput({
             )}
             <span>点击选择服装图片（支持 JPG / PNG）</span>
             <span className="text-xs text-muted-foreground/80">
-              上传后请选择服装类型，即可试穿
+              上传后将自动识别服装类型与颜色
             </span>
           </button>
           {preview && (
@@ -221,7 +237,7 @@ export function LinkInput({
                 className="h-16 w-16 rounded-lg border border-border/60 object-cover"
               />
               <div className="text-xs text-muted-foreground">
-                已载入服装图片，请在下方「手动选择服装」中指定类型与颜色。
+                已载入服装图片，正在/已自动识别服装信息。
               </div>
             </div>
           )}

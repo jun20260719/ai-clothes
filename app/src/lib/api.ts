@@ -89,3 +89,24 @@ export async function estimateBodyViaApi(image: string): Promise<BodyEstimate> {
   }
   return data.measurements as BodyEstimate;
 }
+
+/**
+ * 商品图视觉识别：接收商品主图（dataURL 或 URL），后端视觉模型自动识别
+ * 服装类型与颜色。识别成功返回 garment，无法识别（图非服装/模型无把握）则 recognized=false。
+ */
+export async function recognizeProductImageApi(
+  image: string,
+): Promise<{ recognized: boolean; garment: import("@/types").Garment | null }> {
+  const resp = await fetch(`${API_BASE}/recognize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image }),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) {
+    const e = new Error(data.error || `识别失败 (${resp.status})`);
+    (e as Error & { code?: string }).code = data.code;
+    throw e;
+  }
+  return { recognized: !!data.recognized, garment: (data.garment as import("@/types").Garment) || null };
+}

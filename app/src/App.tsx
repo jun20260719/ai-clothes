@@ -167,15 +167,6 @@ export default function App() {
     }
   }
 
-  function handleAddManual(g: Garment) {
-    setProduct((prev) =>
-      prev ? { ...prev, garments: [...prev.garments, g], isClothing: true } : prev,
-    );
-    setSelectedId(g.id);
-    setResult(null);
-    toast.success("已添加服装，可继续上传自拍并试衣");
-  }
-
   function resetResult() {
     setResult(null);
   }
@@ -327,7 +318,6 @@ export default function App() {
                   selectedId={selectedId}
                   onSelect={setSelectedId}
                   onReset={resetLink}
-                  onAddManual={handleAddManual}
                 />
               </CardContent>
             </Card>

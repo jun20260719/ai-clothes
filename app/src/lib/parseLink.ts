@@ -1,6 +1,6 @@
 import type { Garment, GarmentType, ParsedProduct, Platform } from "@/types";
 import { REGION_MAP, COLOR_PALETTE } from "./garments";
-import { parseViaApi } from "./api";
+import { parseViaApi, recognizeProductImageApi } from "./api";
 
 /* ──────────────────────────────────────────────────────────────────────────
  * 生产环境接入说明（重要）
@@ -201,9 +201,35 @@ export { COLOR_PALETTE };
  * 任何失败（无后端 / 网络错误 / 解析异常）自动回退到前端 mock，保证流程可用。
  */
 export async function parseProduct(url: string): Promise<ParsedProduct> {
+  let product: ParsedProduct;
   try {
-    return await parseViaApi(url);
+    product = await parseViaApi(url);
   } catch {
-    return parseLink(url);
+    product = await parseLink(url);
   }
+
+  // 后端已解析为服装，但服装类型未识别（标题无关键词命中 / 视觉兜底未触发）
+  // → 用商品主图再让视觉模型识别一次，自动补全类型与颜色，免去手动选择。
+  if (
+    product.isClothing &&
+    product.garments.length === 0 &&
+    typeof product.imageUrl === "string" &&
+    product.imageUrl.startsWith("data:")
+  ) {
+    try {
+      const rec = await recognizeProductImageApi(product.imageUrl);
+      if (rec.recognized && rec.garment) {
+        product = {
+          ...product,
+          garments: [rec.garment],
+          incomplete: false,
+          aiRecognized: true,
+        };
+      }
+    } catch {
+      // 识别失败则保持 garments 为空，由 ProductCard 提示「无法识别，无法进行下一步」
+    }
+  }
+
+  return product;
 }

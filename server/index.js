@@ -6,9 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, ".env") });
 import express from "express";
 import cors from "cors";
-import { parseProductPage } from "./parse.js";
+import { parseProductPage, makeGarment } from "./parse.js";
 import { runTryOn, resolveToDataUrl } from "./tryon.js";
-import { visionConfigured, visionModel, estimateBodyFromImage } from "./vision.js";
+import { visionConfigured, visionModel, estimateBodyFromImage, recognizeProductImage } from "./vision.js";
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -89,7 +89,31 @@ app.post("/api/estimate-body", async (req, res) => {
   }
 });
 
-// ④ 托管前端构建产物（app 的 `npm run build` 已输出到 server/public）
+// ④ 商品图视觉识别（上传图片 / 链接主图 → 自动识别服装类型与颜色，免去手动选择）
+app.post("/api/recognize", async (req, res) => {
+  const { image } = req.body || {};
+  if (!image) {
+    return res.status(400).json({ ok: false, error: "缺少 image（商品图片）" });
+  }
+  if (!visionConfigured) {
+    return res
+      .status(503)
+      .json({ ok: false, code: "NO_VISION", error: "未配置视觉识别模型（VISION_API_KEY / VISION_MODEL）" });
+  }
+  try {
+    const rec = await recognizeProductImage(image);
+    // 未识别到有效服装（图里不是衣服 / 模型无法判断）→ recognized=false
+    if (!rec || !rec.garmentType || rec.garmentType === "other") {
+      return res.json({ ok: true, recognized: false, garment: null });
+    }
+    const garment = makeGarment(rec.garmentType, rec.title, rec.color, rec.region);
+    res.json({ ok: true, recognized: true, garment });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message || "识别失败" });
+  }
+});
+
+// ⑤ 托管前端构建产物（app 的 `npm run build` 已输出到 server/public）
 // 必须放在所有 /api 路由「之后」：静态资源与 SPA fallback 才不会拦截 API 请求
 const PUBLIC_DIR = join(__dirname, "public");
 if (existsSync(PUBLIC_DIR)) {

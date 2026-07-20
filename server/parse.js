@@ -157,7 +157,7 @@ const GARMENT_LABELS = {
   shorts: "短裤", tanktop: "背心/吊带", other: "服装",
 };
 
-function makeGarment(type, name, color, region) {
+export function makeGarment(type, name, color, region) {
   const c = color || "#7c3aed";
   return {
     id: `g-${Date.now().toString(36)}`,
