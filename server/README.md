@@ -40,7 +40,7 @@
   - `IMAGE_BASE_URL`：接口基地址（兼容 OpenAI 风格）
   - `IMAGE_API_KEY`：API Key
   - `IMAGE_MODEL`：模型名（如 `agnes-image-2.0-flash`）
-  - 可选：`IMAGE_ENDPOINT`（默认 `/images/generations`）、`IMAGE_SIZE`、`IMAGE_INPUT_IMAGE`
+  - 可选：`IMAGE_ENDPOINT`（默认 `/images/generations`）、`IMAGE_SIZE`
 - 未配置 `IMAGE_API_KEY` / `IMAGE_MODEL` 时返回 `503`，前端回退到本地 Canvas 预览。
 
 ## 运行

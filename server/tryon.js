@@ -17,7 +17,6 @@
  *   IMAGE_MODEL       模型名，默认 agnes-image-2.0-flash
  *   IMAGE_ENDPOINT    端点路径，默认 /images/generations
  *   IMAGE_SIZE        生成尺寸，默认 1024x1024（Agnes 支持 1024x768/1024x1024/768x1024）
- *   IMAGE_INPUT_IMAGE 是否把自拍照作为图像输入传给模型（图生图，默认 true）
  *
  * 未配置 IMAGE_API_KEY / IMAGE_MODEL 时抛出明确错误，前端回退到本地 Canvas 预览。
  */
@@ -156,26 +155,39 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
 
   const garmentDetail = opts.garmentDetail || "";
 
-  // 区域：只提取第二张图的哪个部位服装
+  // 区域：只提取图 2 的哪个部位服装
   const REGION_GUIDE = {
-    upper: { scope: "只提取第二张图中的【上身服装】（颈部/肩膀到腰臀之间），替换第一张人物的上身服装", keep: "下半身服装（裤子/裙子/鞋）必须与原图完全一致，禁止改动。" },
-    lower: { scope: "只提取第二张图中的【下身服装】（腰部到脚踝），替换第一张人物的下身服装", keep: "上半身服装（上衣/外套）必须与原图完全一致，禁止改动。" },
-    full:  { scope: "提取第二张图中的全身服装，替换第一张人物的全身服装", keep: "" },
+    upper: { scope: "只提取图 2 中的【上身服装】（颈部/肩膀到腰臀之间），替换图 1 中人物的上身服装", keep: "下半身服装（裤子/裙子/鞋）必须与图 1 完全一致，禁止改动。" },
+    lower: { scope: "只提取图 2 中的【下身服装】（腰部到脚踝），替换图 1 中人物的下身服装", keep: "上半身服装（上衣/外套）必须与图 1 完全一致，禁止改动。" },
+    full:  { scope: "只提取图 2 中的【全套服装】，替换图 1 中人物的全套服装", keep: "" },
   };
   const guide = REGION_GUIDE[region] || REGION_GUIDE.full;
 
   // ── 双图模式：有商品图 ──
   if (opts.productImage) {
     return [
-      `你将根据两张图片生成一张新图片。`,
-      `第一张：用户本人照片，必须完整保留其脸、发型、体型、姿势、背景。`,
-      `第二张：商品（服装）图片。`,
-      `任务：${guide.scope}，输出这张新图片。`,
-      ``,
-      `身份锁定：输出的人物必须与第一张图是同一人，脸型 / 五官 / 发型 / 肤色 / 体型 / 姿势 / 背景 100% 保持原样，严禁参考第二张图中模特的任何特征。`,
-      guide.keep ? `区域保持：${guide.keep}` : ``,
-      `质量：${garmentDetail ? "目标服装参考：" + garmentDetail + "。" : (name ? `目标服装：${name}。` : "")}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
-      feedback ? `用户修正建议（请据此调整成图，其余要求不变）：\n${feedback}` : "",
+      `基于两张参考图进行真实人像换装编辑:`,
+      `以图1作为唯一人物底图和场景底图：`,
+      `图1中的人物身份、脸部五官、脸型、肤色、发型、发际线、表情、头部角度、身体姿势、肢体动作、站姿、体型比例、背景环境、画面构图、光线方向、色调和景深必须完整保留，不允许重新生成、不允许美化、不允许微调五官、不允许改变脸型、不允许改变发型、不允许改变姿势、不允许改变背景。人物皮肤质感保持原图真实自然。`,
+      // `${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
+      `以图2作为服装参考图：`,
+      `${guide.scope}, 忽略图 2 模特`,
+      `编辑目标：`,
+      `将图1人物身上的原有服装替换为图2中的全套服装。`,
+      `${garmentDetail ? "图 2 服装描述：" + garmentDetail + "。" : (name ? `图 2 服装描述：${name}。` : "")}`,
+      `服装融合要求：`,
+      `服装边缘必须与脖颈、肩膀、手臂、腰部、腿部自然贴合，袖口、领口、裙腰、裙摆位置合理，布料褶皱跟随图1人物动作产生，阴影、高光、反光、色温与图1原图环境光一致。服装不能浮空，不能穿模，不能有白边，不能像贴图，不能出现两套衣服重叠。`,
+      `画质要求：`,
+      `真实人像摄影质感，高清写实，细节清晰，面料纹理、刺绣花纹、布料垂坠感清楚自然。整体画面保持图1原有真实摄影风格，不改变原图氛围。`,
+
+      // `你需要根据两张图片生成一张新图片。`,
+      // `第一张：用户本人照片，必须完整保留其脸、发型、体型、姿势、背景。`,
+      // `第二张：商品（服装）图片。`,
+      // `任务：${guide.scope}，输出这张新图片。`,
+      // `身份锁定：输出的人物必须与图 1  是同一人，脸型 / 五官 / 发型 / 肤色 / 体型 / 姿势 / 背景 100% 保持原样，严禁参考图 2 中模特的任何特征。`,
+      // guide.keep ? `区域保持：${guide.keep}` : ``,
+      // `${garmentDetail ? "目标服装描述：" + garmentDetail + "。" : (name ? `目标服装描述：${name}。` : "")}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
+      feedback ? `用户修正建议(这个优先级最高)：\n${feedback}` : "",
     ].filter(Boolean).join("\n");
   }
 
@@ -183,7 +195,7 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   return [
     `你将修改这张用户照片：把人物服装替换为目标服装，其余（脸、发型、体型、姿势、背景）100% 保持原样。`,
     `目标服装：${name || "服装"}。${fitText}只替换服装，自然贴合身材，褶皱与光影真实，边缘无缝融合。`,
-    feedback ? `用户修正建议（请据此调整成图，其余要求不变）：\n${feedback}` : "",
+    feedback ? `用户修正建议(优先级最高)：\n${feedback}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -303,25 +315,18 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
   const model = process.env.IMAGE_MODEL || "agnes-image-2.0-flash";
   const size = pickBestSize(selfie);  // ← 根据自拍实际比例自动选择
   console.log(`[tryon] callImageApi: 最终输出 size=${size}`);
-  const useInputImage = (process.env.IMAGE_INPUT_IMAGE ?? "true").toLowerCase() !== "false";
 
   const headers = {
     Authorization: `Bearer ${process.env.IMAGE_API_KEY}`,
     "Content-Type": "application/json",
   };
 
-  // 负面提示：强化身份锁定（第一张图的人不被第二张图的模特替换）
-  const negativePrompt = [
-    "改变人物身份",
-    "替换为第二张图的模特脸/发型/肤色/身材",
-    "改变背景或姿势",
-    "服装与身材不贴合",
-    "白边、拼接痕迹、浮空服装",
-  ].join("，");
+  // 负面提示：强化身份锁定（图 1  的人不被图 2 的模特替换）
+  const negativePrompt = "换脸，改变五官，改变脸型，改变发型，改变表情，改变头部角度，改变身体姿势，改变站姿，改变手臂位置，改变背景，改变构图，改变光影，改变人物身份，重绘脸部，重绘头发，重绘皮肤，过度磨皮，自动美颜，图2模特五官，图2模特脸型，图2模特身材，服装穿模，服装浮空，白边，抠图痕迹，拼接痕迹，两套衣服重叠，布料悬浮，边缘不自然，光影不一致，色差，畸形手臂，畸形手指，腿部变形，身体拉伸，比例失真，卡通感，二次元，油画感，低清晰度，过度锐化，过度滤镜";
 
   // Agnes / OpenAI 兼容网关风格：图生图走 extra_body.image（数组，支持多张）
   // 真试衣模式图序：[自拍照(底图/主体), 商品图(服装参考)]
-  // 第一张图是用户本人（需完整保留脸/身体/姿势/背景），第二张仅提取服装款式
+  // 图 1  是用户本人（需完整保留脸/身体/姿势/背景），第二张仅提取服装款式
   // （若你的服务使用 multipart 的 /images/edits，可在此改为 FormData 并 append("image", ...)）
   const images = [selfie];
   if (productImage) images.push(productImage);
@@ -330,10 +335,10 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
     model,
     prompt,
     size,
+    image: images,
     negative_prompt: negativePrompt,
     extra_body: {
       response_format: "b64_json",
-      ...(useInputImage && images.length ? { image: images } : {}),
     },
   };
 
