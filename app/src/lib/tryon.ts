@@ -9,6 +9,8 @@ export interface TryOnOptions {
   measurements: BodyMeasurements;
   /** 商品主图（URL / dataURL）；提供时走「换脸式」试衣，保留商品图姿势/服装 */
   productImageUrl?: string | null;
+  /** 用户累积的「修正建议 / 补充要求」，重新生成时不断追加，并入整体上下文 */
+  feedback?: string;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -47,7 +49,7 @@ export function scoreQuality(m: BodyMeasurements): { quality: number; missing: s
  * 作为零依赖、可离线运行的预览实现。
  */
 export async function tryOn(opts: TryOnOptions): Promise<TryOnResult> {
-  const { selfie, garment, measurements } = opts;
+  const { selfie, garment, measurements, feedback } = opts;
   const maxDim = 1000;
   const sw = (selfie as HTMLImageElement).naturalWidth || (selfie as HTMLCanvasElement).width;
   const sh = (selfie as HTMLImageElement).naturalHeight || (selfie as HTMLCanvasElement).height;
@@ -133,6 +135,7 @@ export async function tryOn(opts: TryOnOptions): Promise<TryOnResult> {
     quality,
     garment,
     note,
+    feedback,
   };
 }
 
@@ -150,7 +153,7 @@ function imgToDataUrl(img: HTMLImageElement | HTMLCanvasElement): string {
  * 失败（无后端 / 未配置模型 / 网络异常）自动回退到本地 Canvas 智能预览。
  */
 export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
-  const { selfie, garment, measurements, productImageUrl } = opts;
+  const { selfie, garment, measurements, productImageUrl, feedback } = opts;
   const { quality, missing } = scoreQuality(measurements);
   const selfieUrl = imgToDataUrl(selfie);
   const payload = {
@@ -158,6 +161,7 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
     garment: { name: garment.name, region: garment.region, detail: garment.detail },
     measurements: measurements as unknown as Record<string, string>,
     productImage: productImageUrl || undefined,
+    feedback: feedback || undefined,
   };
 
   // 首次调用失败时自动重试，多次都失败才回退本地 Canvas 预览，
@@ -179,6 +183,7 @@ export async function generateTryOn(opts: TryOnOptions): Promise<TryOnResult> {
         note: missing.length
           ? `AI 试衣完成。补充「${missing.join("、")}」可进一步优化版型贴合度。`
           : "AI 试衣完成，版型贴合度较高。",
+        feedback,
       };
     } catch (e) {
       // 后端明确未配置模型/密钥：无需重试，直接回退本地预览

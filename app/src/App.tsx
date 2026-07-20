@@ -8,9 +8,11 @@ import {
   ShieldCheck,
   Loader2,
   ClipboardPaste,
+  RefreshCw,
 } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StepIndicator } from "@/components/StepIndicator";
 import { LinkInput } from "@/components/LinkInput";
@@ -89,9 +91,12 @@ export default function App() {
   useEffect(() => {
     saveMeasurements(measurements);
   }, [measurements]);
-  const [result, setResult] = useState<TR | null>(null);
+  const [results, setResults] = useState<TR[]>([]);
   const [generating, setGenerating] = useState(false);
   const [estimating, setEstimating] = useState(false);
+  // 修正建议：feedbackInput 为当前输入框内容，feedbackContext 为已累积进 prompt 的上下文
+  const [feedbackInput, setFeedbackInput] = useState("");
+  const [feedbackContext, setFeedbackContext] = useState("");
 
   const selectedGarment: Garment | undefined = product?.garments.find(
     (g) => g.id === selectedId,
@@ -105,7 +110,7 @@ export default function App() {
   );
 
   // 新流程顺序：① 上传自拍 → ② 身体数据 → ③ 粘贴链接 → ④ 生成试衣
-  const step = result
+  const step = results.length > 0
     ? 4
     : canGenerate || generating
       ? 4
@@ -115,7 +120,8 @@ export default function App() {
           ? 2
           : 1;
 
-  async function generate() {
+  /** 真正执行一次试衣生成（feedbackToUse 为本次要并入 prompt 的修正建议） */
+  async function doGenerate(feedbackToUse?: string) {
     if (!selectedGarment || !selfieImg) return;
     setGenerating(true);
     try {
@@ -124,9 +130,11 @@ export default function App() {
         garment: selectedGarment,
         measurements,
         productImageUrl: product?.imageUrl || null,
+        feedback: feedbackToUse || undefined,
       });
-      setResult(res);
-      toast.success("试衣图已生成");
+      // 追加新结果（不覆盖历史），页面展示所有版本
+      setResults((prev) => [...prev, res]);
+      toast.success(results.length === 0 ? "试衣图已生成" : "已根据你的建议重新生成");
     } catch (e) {
       console.error("[generate] 试衣生成失败:", e);
       const msg = e instanceof Error ? e.message : String(e);
@@ -136,10 +144,30 @@ export default function App() {
     }
   }
 
+  /** 首次生成（初始试衣效果） */
+  function generate() {
+    void doGenerate("");
+  }
+
+  /** 根据用户在「修正描述词」中填写的建议重新生成：把建议累积进整体上下文后调用 doGenerate */
+  async function regenerate() {
+    const advice = feedbackInput.trim();
+    if (!advice) {
+      toast.error("请先填写修正建议，再点击重新生成");
+      return;
+    }
+    const nextContext = feedbackContext ? `${feedbackContext}\n${advice}` : advice;
+    setFeedbackContext(nextContext);
+    setFeedbackInput("");
+    await doGenerate(nextContext);
+  }
+
   function resetLink() {
     setProduct(null);
     setSelectedId(null);
-    setResult(null);
+    setResults([]);
+    setFeedbackInput("");
+    setFeedbackContext("");
   }
 
   /** 用户手动修改试衣部位（上半身/下半身/全身）→ 更新选中服装的 region，生成时据此判定 */
@@ -151,7 +179,9 @@ export default function App() {
         g.id === selectedId ? { ...g, region } : g,
       ),
     });
-    setResult(null);
+    setResults([]);
+    setFeedbackInput("");
+    setFeedbackContext("");
   }
 
   /** 用户编辑服装描述（textarea）→ 更新选中服装的 detail，生成时透传给试衣接口。
@@ -192,7 +222,9 @@ export default function App() {
   }
 
   function resetResult() {
-    setResult(null);
+    setResults([]);
+    setFeedbackInput("");
+    setFeedbackContext("");
   }
 
   return (
@@ -267,7 +299,9 @@ export default function App() {
                   onRemove={() => {
                     setSelfieUrl(null);
                     setSelfieImg(null);
-                    setResult(null);
+                    setResults([]);
+                    setFeedbackInput("");
+                    setFeedbackContext("");
                   }}
                 />
               </CardContent>
@@ -321,7 +355,9 @@ export default function App() {
                 onParsed={(p) => {
                   setProduct(p);
                   setSelectedId(p.isClothing ? p.garments[0]?.id ?? null : null);
-                  setResult(null);
+                  setResults([]);
+                  setFeedbackInput("");
+                  setFeedbackContext("");
                 }}
               />
             </CardContent>
@@ -349,8 +385,8 @@ export default function App() {
             </Card>
           )}
 
-          {/* 生成按钮 */}
-          {canGenerate && (
+          {/* 生成按钮（仅首次，结果出现后改用下方「修正描述词」重新生成） */}
+          {canGenerate && results.length === 0 && (
             <div className="flex flex-col items-center gap-3">
               <Button size="lg" className="h-12 px-8 text-base" onClick={generate}>
                 <Wand2 className="mr-2 h-5 w-5" /> 生成试衣效果
@@ -370,21 +406,62 @@ export default function App() {
             </Card>
           )}
 
-          {/* 步骤4：结果 */}
-          {result && selfieUrl && (
+          {/* 步骤4：结果 + 修正描述词（可反复重新生成，追加不覆盖） */}
+          {results.length > 0 && selfieUrl && (
             <Card className="border-primary/30 shadow-md">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <Sparkles className="h-4 w-4 text-primary" />
-                  你的试衣效果
+                  你的试衣效果（{results.length} 张）
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <TryOnResult
                   selfieUrl={selfieUrl}
-                  result={result}
+                  results={results}
                   onReset={resetResult}
                 />
+
+                {/* 修正描述词：填写修复建议 → 重新生成 → 追加新图 */}
+                <div className="mt-6 border-t border-border/60 pt-5">
+                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+                    <RefreshCw className="h-4 w-4 text-primary" />
+                    修正描述词（可选）
+                    <span className="text-xs font-normal text-muted-foreground">
+                      描述想调整的地方，会根据建议重新生成并追加到下方
+                    </span>
+                  </div>
+                  <Textarea
+                    value={feedbackInput}
+                    onChange={(e) => setFeedbackInput(e.target.value)}
+                    placeholder="例如：裙摆再长一点、整体颜色换成雾霾蓝、领口收一点更修身、褶皱再自然些…"
+                    rows={3}
+                    disabled={generating}
+                  />
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Button onClick={regenerate} disabled={generating || !feedbackInput.trim()}>
+                      <RefreshCw className="mr-1.5 h-4 w-4" />
+                      根据建议重新生成
+                    </Button>
+                    {feedbackContext && (
+                      <span className="text-xs text-muted-foreground">
+                        已累积 {feedbackContext.split("\n").filter(Boolean).length} 条修正建议，将一并作为上下文
+                      </span>
+                    )}
+                  </div>
+                  {feedbackContext && (
+                    <div className="mt-3 rounded-lg bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                      <span className="font-medium text-foreground">已采纳的修正建议：</span>
+                      <br />
+                      {feedbackContext.split("\n").filter(Boolean).map((line, i) => (
+                        <span key={i}>
+                          {i + 1}. {line}
+                          <br />
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
           )}

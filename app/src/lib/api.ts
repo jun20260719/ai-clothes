@@ -28,6 +28,8 @@ export interface TryOnApiPayload {
   measurements: Record<string, string>;
   /** 商品主图（URL 或 dataURL）；提供时后端走「换脸式」试衣，保留商品图姿势/服装 */
   productImage?: string;
+  /** 用户累积的「修正建议 / 补充要求」：多次重新生成时不断追加，并入整体上下文 */
+  feedback?: string;
 }
 
 /** 调用后端 AI 试衣模型 */

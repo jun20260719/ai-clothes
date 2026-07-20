@@ -84,4 +84,6 @@ export interface TryOnResult {
   garment: Garment;
   /** 备注（如缺少哪些数据） */
   note: string;
+  /** 生成该结果所用的「修正建议 / 补充要求」（首次生成为空，重新生成时记录用户当时填写的反馈） */
+  feedback?: string;
 }

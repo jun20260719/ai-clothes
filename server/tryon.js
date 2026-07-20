@@ -140,6 +140,9 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   const region = garment.region || "full"; // upper / lower / full
   const name = garment.name || "";
 
+  // 用户累积的「修正建议 / 补充要求」（多次重新生成时不断追加到整体上下文）
+  const feedback = (opts.feedback || "").toString().trim();
+
   // 身体数据
   const fit = [];
   if (m.gender) fit.push(m.gender === "male" ? "男性" : m.gender === "female" ? "女性" : m.gender);
@@ -172,6 +175,7 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
       `身份锁定：输出的人物必须与第一张图是同一人，脸型 / 五官 / 发型 / 肤色 / 体型 / 姿势 / 背景 100% 保持原样，严禁参考第二张图中模特的任何特征。`,
       guide.keep ? `区域保持：${guide.keep}` : ``,
       `质量：${garmentDetail ? "目标服装参考：" + garmentDetail + "。" : (name ? `目标服装：${name}。` : "")}${fitText}自然贴合身材，褶皱与光影真实，边缘与皮肤无缝融合。`,
+      feedback ? `用户修正建议（请据此调整成图，其余要求不变）：\n${feedback}` : "",
     ].filter(Boolean).join("\n");
   }
 
@@ -179,7 +183,8 @@ function buildPrompt(garment = {}, m = {}, opts = {}) {
   return [
     `你将修改这张用户照片：把人物服装替换为目标服装，其余（脸、发型、体型、姿势、背景）100% 保持原样。`,
     `目标服装：${name || "服装"}。${fitText}只替换服装，自然贴合身材，褶皱与光影真实，边缘无缝融合。`,
-  ].join("\n");
+    feedback ? `用户修正建议（请据此调整成图，其余要求不变）：\n${feedback}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 /**
@@ -363,13 +368,14 @@ async function callImageApi({ selfie, productImage, prompt, region = "full" }) {
 
 /**
  * 运行 AI 试衣
- * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string}} params
+ * @param {{selfie:string, garment?:object, measurements?:object, productImage?:string, feedback?:string}} params
  *   productImage 为商品主图（URL 或 dataURL）。提供时走「真试衣」：以自拍为底，把商品服装穿到用户身上。
  *   garment.detail 为识别阶段产出的服装视觉细节描述（前端可编辑），直接作为试衣 prompt 参考，
  *   不再在试衣阶段二次调用视觉模型提取，节省一次 AI 调用。
+ *   feedback 为用户累积的「修正建议 / 补充要求」（多次重新生成时不断追加），会并入 prompt 整体上下文。
  * @returns {Promise<{image:string}>}
  */
-export async function runTryOn({ selfie, garment, measurements, productImage }) {
+export async function runTryOn({ selfie, garment, measurements, productImage, feedback }) {
   if (!process.env.IMAGE_API_KEY) {
     const e = new Error("后端未配置 IMAGE_API_KEY，无法调用 AI 试衣（已回退本地预览）");
     e.code = "NO_TOKEN";
@@ -397,7 +403,7 @@ export async function runTryOn({ selfie, garment, measurements, productImage }) 
   else console.log(`[tryon] 无服装细节描述，将退回 garment.name 兜底`);
   log("准备 prompt");
 
-  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, garmentDetail });
+  const prompt = buildPrompt(garment, measurements, { productImage: !!productB64, garmentDetail, feedback });
   console.log(`[tryon] 生成图像 prompt: ${prompt}`);
   const image = await callImageApi({ selfie, productImage: productB64, prompt, region });
   log("图像生成完成");

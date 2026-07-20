@@ -49,12 +49,12 @@ app.get("/api/parse", async (req, res) => {
 
 // ② AI 试衣（OpenAI 兼容图像生成，需配置 IMAGE_API_KEY / IMAGE_MODEL）
 app.post("/api/tryon", async (req, res) => {
-  const { selfie, garment, measurements, productImage } = req.body || {};
+  const { selfie, garment, measurements, productImage, feedback } = req.body || {};
   if (!selfie) {
     return res.status(400).json({ ok: false, error: "缺少 selfie（自拍照）" });
   }
   try {
-    const { image } = await runTryOn({ selfie, garment, measurements, productImage });
+    const { image } = await runTryOn({ selfie, garment, measurements, productImage, feedback });
     res.json({ ok: true, image });
   } catch (e) {
     res.status(e.code === "NO_TOKEN" || e.code === "NO_MODEL" ? 503 : 502).json({
